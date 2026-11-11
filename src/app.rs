@@ -486,6 +486,9 @@ impl App {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.try_quit(),
                 KeyCode::Char('s') | KeyCode::Char('S') => self.write_confirm(),
+                // Scroll Lock is missing from most Mac keyboards, so Ctrl+L
+                // provides the same toggle without needing Fn or F7.
+                KeyCode::Char('l') | KeyCode::Char('L') => self.toggle_scroll_lock(),
                 _ => {}
             }
             return Ok(());
@@ -770,6 +773,14 @@ impl App {
     fn handle_edit_key(&mut self, key: KeyEvent) -> Result<()> {
         let rows = self.rows_per_pane;
         let bpr = self.bytes_per_row;
+        // Allow Ctrl+L to toggle Scroll Lock while editing, before its `l`
+        // reaches the data-entry path.
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('l') | KeyCode::Char('L'))
+        {
+            self.toggle_scroll_lock();
+            return Ok(());
+        }
         match key.code {
             KeyCode::Esc => {
                 self.edit = None;

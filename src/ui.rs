@@ -14,6 +14,9 @@ use crate::help;
 const FOOTER_ROWS: u16 = 4;
 /// Width of the preview line built by `CS:0x3233` in `CS:0x171F`.
 const PREVIEW_LEN: usize = 64;
+/// The preview starts sixteen bytes before the cursor, so the active byte is
+/// the seventeenth character of the line.
+const PREVIEW_BEFORE: usize = 16;
 
 /// Fixed geometry of the original 80x25 screen: a title row for each window,
 /// eight data rows per window, the six-row position band between them, the
@@ -377,13 +380,20 @@ fn draw_adaptive(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// The two-line adaptive position band: cursor offset in both notations and
-/// the original 64-byte preview, truncated to whatever space remains.
+/// the original 64-byte preview.  The original uses box-drawing crosshairs to
+/// connect these lines to the cursor byte, but the adaptive layout has no fixed
+/// byte columns to point at, so the preview character at the cursor position is
+/// shown in the same reverse-video style as the cursor byte in the data rows.
 fn draw_adaptive_middle(frame: &mut Frame, app: &mut App, rect: Rect) {
     if rect.width == 0 || rect.height == 0 {
         return;
     }
     let theme = app.options.theme;
     let normal = Style::default().fg(theme.fg()).bg(theme.bg());
+    let cursor_style = Style::default()
+        .fg(theme.cursor_fg())
+        .bg(theme.cursor_bg())
+        .add_modifier(Modifier::BOLD);
 
     for index in 0..2usize {
         if index as u16 >= rect.height {
@@ -397,15 +407,27 @@ fn draw_adaptive_middle(frame: &mut Frame, app: &mut App, rect: Rect) {
         }
 
         let cursor = app.panes[index].cursor;
-        let mut text = format!("Hex {:08X}  Dec {}", cursor, cursor);
-        let used = text.chars().count();
-        if (rect.width as usize) > used + 8 {
-            text.push_str("  ");
+        let head = format!("Hex {:08X}  Dec {}", cursor, cursor);
+        let used = head.chars().count();
+        let mut spans = vec![Span::styled(head, style)];
+        // Show the preview only when the cursor character itself fits.
+        if (rect.width as usize) > used + 2 + PREVIEW_BEFORE {
+            spans.push(Span::styled("  ", style));
             let room = rect.width as usize - used - 2;
             let preview = preview_text(app, index);
-            text.extend(preview.chars().take(room.min(PREVIEW_LEN)));
+            for (i, ch) in preview.chars().take(room.min(PREVIEW_LEN)).enumerate() {
+                let cell = if i == PREVIEW_BEFORE {
+                    cursor_style
+                } else {
+                    style
+                };
+                spans.push(Span::styled(ch.to_string(), cell));
+            }
         }
-        put_line(frame, rect.x, y, &text, style);
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect::new(rect.x, y, rect.width, 1),
+        );
     }
 }
 
@@ -602,7 +624,7 @@ fn byte_at(app: &mut App, index: usize, offset: u64) -> Option<u8> {
 /// `cursor+47`, with blanks outside the file (`CS:0x3233` → `CS:0x32BF`).
 fn preview_text(app: &mut App, index: usize) -> String {
     let cursor = app.panes[index].cursor;
-    let start = cursor as i64 - 16;
+    let start = cursor as i64 - PREVIEW_BEFORE as i64;
     let ebcdic = app.options.ebcdic;
     let conceal = app.options.conceal;
     let mut text = String::with_capacity(PREVIEW_LEN);
@@ -663,8 +685,15 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         Style::default().fg(theme.accent()).bg(theme.bg())
     };
+    // The original 80x25 screen has no room for extra hints, but the adaptive
+    // footer does, and Scroll Lock is absent from most Mac keyboards.
+    let status = if app.message.is_some() {
+        app.status_line()
+    } else {
+        format!("{}  (Ctrl+L toggles)", app.status_line())
+    };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(app.status_line(), status_style))),
+        Paragraph::new(Line::from(Span::styled(status, status_style))),
         rows[0],
     );
     frame.render_widget(
@@ -686,7 +715,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// `CABLE: Compare Dir Edit ...` with the currently selected command shown in
-/// reverse video.  Shared by the original and compact footers.
+/// reverse video.  The accelerator letter of every command is bold, as in the
+/// original, whose screen attributes set it apart from the rest of the word.
+/// Shared by the original and adaptive footers.
 fn draw_menu_line(frame: &mut Frame, app: &App, x: u16, y: u16) {
     let theme = app.options.theme;
     let mut menu = vec![Span::styled(
@@ -697,12 +728,21 @@ fn draw_menu_line(frame: &mut Frame, app: &App, x: u16, y: u16) {
         if i > 0 {
             menu.push(Span::raw(" "));
         }
-        let style = if i == app.menu_index {
+        let base = if i == app.menu_index {
             Style::default().fg(theme.bar_fg()).bg(theme.bar_bg())
         } else {
             Style::default().fg(theme.fg()).bg(theme.bg())
         };
-        menu.push(Span::styled(*label, style));
+        let mut chars = label.chars();
+        if let Some(first) = chars.next() {
+            let mut head = base;
+            head = head.add_modifier(Modifier::BOLD);
+            menu.push(Span::styled(first.to_string(), head));
+            let rest: String = chars.collect();
+            if !rest.is_empty() {
+                menu.push(Span::styled(rest, base));
+            }
+        }
     }
     let rect = Rect::new(x, y, ORIGINAL_COLS, 1);
     frame.render_widget(Paragraph::new(Line::from(menu)), rect);

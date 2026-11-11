@@ -36,8 +36,8 @@ cargo clippy    # optional
 
 | File | Platform |
 | --- | --- |
-| `cable-rs-v0.2.0-linux-x86_64` | Linux ELF, glibc 2.17 or newer |
-| `cable-rs-v0.2.0-windows-x86_64.exe` | Windows 10/11 console (x86-64) |
+| `cable-rs-v0.2.1-linux-x86_64` | Linux ELF, glibc 2.17 or newer |
+| `cable-rs-v0.2.1-windows-x86_64.exe` | Windows 10/11 console (x86-64) |
 
 Both were produced from macOS with rustup targets and two linkers:
 
@@ -125,14 +125,18 @@ Type first letter of command or press ◄─┘ to select hilited command
   attribute (`A` for a normal archive file, `R` for read-only).
 - Row 23 describes the highlighted command; `Help` is highlighted at start-up,
   which is why the first screen shows the generic hint (including the original
-  `◄─┘` Enter keycap).
+  `◄─┘` Enter keycap). The accelerator letter of each command on the `CABLE:`
+  line is bold, as in the original's screen attributes.
 - At exactly 80×25 the screen above is reproduced cell for cell. At every other
   size the clone uses an adaptive layout that fills the terminal: each window
   takes half the available body, the footer stays four rows, and data lines are
   widened by whole sixteen-byte groups. A 120-column terminal shows 32 bytes per
   line, 160 columns shows 48, and so on; lines never end on a partial group.
   `Up`/`Down` move by one displayed line, and `PgUp`/`PgDn` by one window, so
-  multi-group lines scroll naturally.
+  multi-group lines scroll naturally. The position band keeps the `Hex`/`Dec`
+  lines and preview; because the adaptive screen has no fixed byte columns for
+  the original crosshair, the preview character at the cursor position is drawn
+  in reverse video instead.
 
 
 ---
@@ -173,7 +177,7 @@ Type the first letter of a command, or move the highlight with `Space` / `F9` /
 | `F4` | toggle character/HEX input |
 | `F5` | toggle conceal/show |
 | `F6` | toggle ASCII/EBCDIC |
-| `Scroll Lock` / `F7` | toggle `SL:Active` (active window only) / `SL:Both` (both windows) |
+| `Scroll Lock` / `F7` / `Ctrl+L` | toggle `SL:Active` (active window only) / `SL:Both` (both windows) |
 | `F9` / `F10` | move the highlighted menu command |
 | `Space` | advance the highlighted menu command |
 | `Enter` | run the highlighted command |
@@ -283,8 +287,8 @@ evidence and open questions.
 - Compares absolute file offsets rather than each pane's own cursor position.
 - 64 KiB pages instead of the original 4 KiB/4-page cache (invisible to users).
 - Help is built in because the original `cable.hlp` was not supplied.
-- Scroll Lock may not be reported by every terminal; `F7` and `--both` /
-  `--active` provide equivalents.
+- Scroll Lock may not be reported by every terminal (and is missing from most
+  Mac keyboards); `F7`, `Ctrl+L` and `--both` / `--active` provide equivalents.
 - Colour themes replace raw per-cell attribute editing.
 - Compare mode tints all visible differences (modern aid).
 - No DOS memory/adaptor checks and no EGA/132-column text modes.
