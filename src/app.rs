@@ -265,20 +265,22 @@ impl Pane {
         }
     }
 
-    pub fn ensure_visible(&mut self, rows: usize) {
+    pub fn ensure_visible(&mut self, rows: usize, bytes_per_row: usize) {
         let rows = rows.max(1) as u64;
-        let page = rows * 16;
-        let row_start = (self.cursor / 16) * 16;
-        if row_start < self.top {
-            self.top = row_start;
+        let bpr = bytes_per_row.max(16) as u64;
+        self.top -= self.top % bpr;
+        let page = rows * bpr;
+        let line_start = (self.cursor / bpr) * bpr;
+        if line_start < self.top {
+            self.top = line_start;
         } else if self.cursor >= self.top + page {
-            let last_row = (self.cursor / 16).saturating_sub(rows - 1);
-            self.top = last_row * 16;
+            let last_row = (self.cursor / bpr).saturating_sub(rows - 1);
+            self.top = last_row * bpr;
         }
         // Keep the window inside the file when possible.
         let len = self.len();
         if len > 0 && self.top >= len {
-            self.top = ((len - 1) / 16) * 16;
+            self.top = ((len - 1) / bpr) * bpr;
         }
     }
 }
@@ -346,6 +348,10 @@ pub struct App {
     pub quit: bool,
     pub message: Option<String>,
     pub rows_per_pane: usize,
+    /// Number of bytes on each displayed line.  Always a multiple of 16; the
+    /// adaptive layout widens it when the terminal has room for more than one
+    /// sixteen-byte group.
+    pub bytes_per_row: usize,
     pub compare_mode: bool,
     pub last_action: Option<LastAction>,
     pub edit: Option<EditState>,
@@ -375,6 +381,7 @@ impl App {
             quit: false,
             message: None,
             rows_per_pane: 10,
+            bytes_per_row: 16,
             compare_mode: false,
             last_action: None,
             edit: None,
@@ -387,6 +394,21 @@ impl App {
 
     pub fn set_message(&mut self, text: impl Into<String>) {
         self.message = Some(text.into());
+    }
+
+    /// Adopt the geometry chosen by the renderer and keep both panes inside
+    /// their windows.  Called on every draw so a terminal resize is handled
+    /// without a keypress.
+    pub fn sync_geometry(&mut self, rows: usize, bytes_per_row: usize) {
+        self.rows_per_pane = rows.max(1);
+        self.bytes_per_row = bytes_per_row.max(16);
+        let rows = self.rows_per_pane;
+        let bpr = self.bytes_per_row;
+        for pane in &mut self.panes {
+            if pane.file.is_some() {
+                pane.ensure_visible(rows, bpr);
+            }
+        }
     }
 
     pub fn status_line(&self) -> String {
@@ -520,14 +542,14 @@ impl App {
             }
             KeyCode::Left => self.move_cursor(-1),
             KeyCode::Right => self.move_cursor(1),
-            KeyCode::Up => self.move_cursor(-16),
-            KeyCode::Down => self.move_cursor(16),
+            KeyCode::Up => self.move_cursor(-(self.bytes_per_row as i64)),
+            KeyCode::Down => self.move_cursor(self.bytes_per_row as i64),
             KeyCode::PageUp => {
-                let d = (self.rows_per_pane.max(1) * 16) as i64;
+                let d = (self.rows_per_pane.max(1) * self.bytes_per_row.max(16)) as i64;
                 self.move_cursor(-d);
             }
             KeyCode::PageDown => {
-                let d = (self.rows_per_pane.max(1) * 16) as i64;
+                let d = (self.rows_per_pane.max(1) * self.bytes_per_row.max(16)) as i64;
                 self.move_cursor(d);
             }
             KeyCode::Home => self.move_home(),
@@ -545,17 +567,18 @@ impl App {
     fn switch_pane(&mut self) {
         self.active = 1 - self.active;
         self.panes[self.active].clamp_cursor(self.edit.is_some());
-        self.panes[self.active].ensure_visible(self.rows_per_pane);
+        self.panes[self.active].ensure_visible(self.rows_per_pane, self.bytes_per_row);
     }
 
     fn move_cursor(&mut self, delta: i64) {
         let allow_append = self.edit.is_some();
         let rows = self.rows_per_pane;
+        let bpr = self.bytes_per_row;
         let active = self.active;
-        Self::nudge_pane(&mut self.panes[active], delta, allow_append, rows);
+        Self::nudge_pane(&mut self.panes[active], delta, allow_append, rows, bpr);
         if self.both_panes() {
             let other = 1 - active;
-            Self::nudge_pane(&mut self.panes[other], delta, allow_append, rows);
+            Self::nudge_pane(&mut self.panes[other], delta, allow_append, rows, bpr);
         }
     }
 
@@ -564,13 +587,13 @@ impl App {
         self.options.move_both && self.panes[0].file.is_some() && self.panes[1].file.is_some()
     }
 
-    fn nudge_pane(p: &mut Pane, delta: i64, allow_append: bool, rows: usize) {
+    fn nudge_pane(p: &mut Pane, delta: i64, allow_append: bool, rows: usize, bpr: usize) {
         if p.file.is_none() {
             return;
         }
         let max = p.cursor_max(allow_append) as i64;
         p.cursor = (p.cursor as i64 + delta).clamp(0, max.max(0)) as u64;
-        p.ensure_visible(rows);
+        p.ensure_visible(rows, bpr);
     }
 
     fn move_home(&mut self) {
@@ -593,20 +616,21 @@ impl App {
     fn move_end(&mut self) {
         let allow_append = self.edit.is_some();
         let rows = self.rows_per_pane;
+        let bpr = self.bytes_per_row;
         let active = self.active;
-        Self::end_pane(&mut self.panes[active], allow_append, rows);
+        Self::end_pane(&mut self.panes[active], allow_append, rows, bpr);
         if self.both_panes() {
             let other = 1 - active;
-            Self::end_pane(&mut self.panes[other], allow_append, rows);
+            Self::end_pane(&mut self.panes[other], allow_append, rows, bpr);
         }
     }
 
-    fn end_pane(p: &mut Pane, allow_append: bool, rows: usize) {
+    fn end_pane(p: &mut Pane, allow_append: bool, rows: usize, bpr: usize) {
         if p.file.is_none() {
             return;
         }
         p.cursor = p.cursor_max(allow_append);
-        p.ensure_visible(rows);
+        p.ensure_visible(rows, bpr);
     }
 
     fn toggle_scroll_lock(&mut self) {
@@ -745,6 +769,7 @@ impl App {
 
     fn handle_edit_key(&mut self, key: KeyEvent) -> Result<()> {
         let rows = self.rows_per_pane;
+        let bpr = self.bytes_per_row;
         match key.code {
             KeyCode::Esc => {
                 self.edit = None;
@@ -758,7 +783,7 @@ impl App {
                 } else {
                     self.active = other;
                     self.panes[self.active].clamp_cursor(true);
-                    self.panes[self.active].ensure_visible(rows);
+                    self.panes[self.active].ensure_visible(rows, bpr);
                     self.message = Some(
                         if self.options.hex_input {
                             "EDIT: Enter HEX digits (Esc to quit)"
@@ -773,14 +798,14 @@ impl App {
             }
             KeyCode::Left => self.move_cursor(-1),
             KeyCode::Right => self.move_cursor(1),
-            KeyCode::Up => self.move_cursor(-16),
-            KeyCode::Down => self.move_cursor(16),
+            KeyCode::Up => self.move_cursor(-(bpr as i64)),
+            KeyCode::Down => self.move_cursor(bpr as i64),
             KeyCode::PageUp => {
-                let d = (rows.max(1) * 16) as i64;
+                let d = (rows.max(1) * bpr.max(16)) as i64;
                 self.move_cursor(-d);
             }
             KeyCode::PageDown => {
-                let d = (rows.max(1) * 16) as i64;
+                let d = (rows.max(1) * bpr.max(16)) as i64;
                 self.move_cursor(d);
             }
             KeyCode::Home => self.move_home(),
@@ -788,7 +813,7 @@ impl App {
             KeyCode::Backspace => {
                 if let Some(p) = self.active_pane_mut() {
                     p.cursor = p.cursor.saturating_sub(1);
-                    p.ensure_visible(rows);
+                    p.ensure_visible(rows, bpr);
                 }
             }
             KeyCode::Enter => {
@@ -824,6 +849,7 @@ impl App {
     fn edit_byte(&mut self, value: u8) {
         let idx = self.active;
         let rows = self.rows_per_pane;
+        let bpr = self.bytes_per_row;
         if self.panes[idx].file.is_none() {
             self.set_message("No file to edit");
             return;
@@ -837,7 +863,7 @@ impl App {
             Ok(()) => {
                 let p = &mut self.panes[idx];
                 p.cursor = p.cursor.saturating_add(1);
-                p.ensure_visible(rows);
+                p.ensure_visible(rows, bpr);
             }
             Err(e) => self.set_message(format!("Error writing file: {e}")),
         }
@@ -892,13 +918,14 @@ impl App {
             Ok(Some(offset)) => {
                 self.compare_mode = true;
                 let rows = self.rows_per_pane;
+                let bpr = self.bytes_per_row.max(16) as u64;
                 for pane in &mut self.panes {
                     // A length difference is reported at the first byte past
                     // the shorter file, so allow the cursor to sit at `len`.
                     pane.cursor = offset.min(pane.len());
                     if pane.file.is_some() {
-                        pane.top = (offset / 16) * 16;
-                        pane.ensure_visible(rows);
+                        pane.top = (offset / bpr) * bpr;
+                        pane.ensure_visible(rows, bpr as usize);
                     }
                 }
                 self.message = None;
@@ -944,9 +971,10 @@ impl App {
         match compare::find(file, needle, start, forward, respect, ebcdic) {
             Ok(Some(offset)) => {
                 let rows = self.rows_per_pane;
+                let bpr = self.bytes_per_row;
                 let p = &mut self.panes[self.active];
                 p.cursor = offset;
-                p.ensure_visible(rows);
+                p.ensure_visible(rows, bpr);
                 self.message = None;
             }
             Ok(None) => self.set_message("No match found before end of file"),
@@ -1037,6 +1065,7 @@ impl App {
                     return Ok(());
                 }
                 let rows = self.rows_per_pane;
+                let bpr = self.bytes_per_row;
                 let p = &mut self.panes[self.active];
                 let len = p.len();
                 let max = if self.edit.is_some() {
@@ -1050,7 +1079,7 @@ impl App {
                     InputAction::Goto => amount.min(max),
                     _ => p.cursor,
                 };
-                p.ensure_visible(rows);
+                p.ensure_visible(rows, bpr);
                 self.message = None;
             }
             InputAction::Search => {
@@ -1438,5 +1467,47 @@ impl App {
             4 => {}
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn temp_file(name: &str, contents: &[u8]) -> PathBuf {
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = dir.join(format!("cable-rs-{pid}-{nanos}-{name}"));
+        fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn scrolling_uses_wide_lines() {
+        let path = temp_file("wide.bin", &vec![0u8; 4096]);
+        let mut pane = Pane::open(&path).unwrap();
+
+        // Move far enough down that only the last eight 32-byte lines fit.
+        pane.cursor = 1000;
+        pane.ensure_visible(8, 32);
+        assert_eq!(pane.top, 768);
+
+        // Still inside the page: no scroll.
+        pane.cursor = 900;
+        pane.ensure_visible(8, 32);
+        assert_eq!(pane.top, 768);
+
+        // Move above the window: jump to the line containing the cursor.
+        pane.cursor = 100;
+        pane.ensure_visible(8, 32);
+        assert_eq!(pane.top, 96);
+
+        fs::remove_file(path).unwrap();
     }
 }

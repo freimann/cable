@@ -30,6 +30,29 @@ cargo fmt
 cargo clippy    # optional
 ```
 
+### Release binaries
+
+`dist/` contains the cross-compiled release builds:
+
+| File | Platform |
+| --- | --- |
+| `cable-rs-v0.2.0-linux-x86_64` | Linux ELF, glibc 2.17 or newer |
+| `cable-rs-v0.2.0-windows-x86_64.exe` | Windows 10/11 console (x86-64) |
+
+Both were produced from macOS with rustup targets and two linkers:
+
+```sh
+rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-gnu
+
+# Linux: Zig supplies the linker and a glibc 2.17 sysroot.
+printf '#!/bin/sh\nexec zig cc -target x86_64-linux-gnu.2.17 "$@"\n' > zig-linux
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$PWD/zig-linux" \
+    cargo build --release --target x86_64-unknown-linux-gnu
+
+# Windows: the mingw-w64 toolchain supplies the linker and import libraries.
+cargo build --release --target x86_64-pc-windows-gnu
+```
+
 ### Command-line options
 
 | Option | Meaning |
@@ -103,8 +126,13 @@ Type first letter of command or press ◄─┘ to select hilited command
 - Row 23 describes the highlighted command; `Help` is highlighted at start-up,
   which is why the first screen shows the generic hint (including the original
   `◄─┘` Enter keycap).
-- On terminals smaller than 80x25 the clone falls back to a compact adaptive
-  layout with per-row offsets and a four-row footer.
+- At exactly 80×25 the screen above is reproduced cell for cell. At every other
+  size the clone uses an adaptive layout that fills the terminal: each window
+  takes half the available body, the footer stays four rows, and data lines are
+  widened by whole sixteen-byte groups. A 120-column terminal shows 32 bytes per
+  line, 160 columns shows 48, and so on; lines never end on a partial group.
+  `Up`/`Down` move by one displayed line, and `PgUp`/`PgDn` by one window, so
+  multi-group lines scroll naturally.
 
 
 ---
@@ -136,7 +164,7 @@ Type the first letter of a command, or move the highlight with `Space` / `F9` /
 | Key | Action |
 | --- | --- |
 | `Tab` / `Shift+Tab` | switch active window |
-| Arrows | move cursor (`Left`/`Right` one byte, `Up`/`Down` 16) |
+| Arrows | move cursor (`Left`/`Right` one byte, `Up`/`Down` one displayed line) |
 | `PgUp` / `PgDn` | move one screen |
 | `Home` / `End` | start / end of file |
 | `F1` | help |
@@ -260,7 +288,8 @@ evidence and open questions.
 - Colour themes replace raw per-cell attribute editing.
 - Compare mode tints all visible differences (modern aid).
 - No DOS memory/adaptor checks and no EGA/132-column text modes.
-- Terminal dimensions replace the original fixed 80/132-column layouts.
+- The original's fixed 80/132-column text modes are replaced by a layout that
+  adapts to the terminal; 80×25 still reproduces the original screen exactly.
 
 ---
 

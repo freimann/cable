@@ -12,9 +12,6 @@ use crate::dir::{format_size, format_time};
 use crate::help;
 
 const FOOTER_ROWS: u16 = 4;
-/// Rows reserved between the two panes for the position boxes and the two
-/// single-line previews, matching the original's middle section.
-const MIDDLE_ROWS: u16 = 6;
 /// Width of the preview line built by `CS:0x3233` in `CS:0x171F`.
 const PREVIEW_LEN: usize = 64;
 
@@ -40,12 +37,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let base = Block::default().style(Style::default().bg(theme.bg()).fg(theme.fg()));
     frame.render_widget(base, area);
 
-    // The original is an 80x25 text screen.  On smaller terminals fall back to
-    // the compact adaptive layout so the panes stay usable.
-    if area.width >= ORIGINAL_COLS && area.height >= ORIGINAL_ROWS {
+    // The original is an 80x25 text screen.  Every other size uses the
+    // adaptive layout, which fills the terminal but keeps each displayed line
+    // a multiple of sixteen bytes wide.
+    if area.width == ORIGINAL_COLS && area.height == ORIGINAL_ROWS {
         draw_original(frame, app, area);
     } else {
-        draw_compact(frame, app, area);
+        draw_adaptive(frame, app, area);
     }
 
     if app.modal.is_some() {
@@ -58,7 +56,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 /// Draw the screen exactly as CABLE does on an 80x25 text mode display.
 fn draw_original(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.rows_per_pane = PANE_ROWS;
+    app.sync_geometry(PANE_ROWS, 16);
     let x = area.x;
     let y = area.y;
 
@@ -335,13 +333,27 @@ fn draw_original_footer(frame: &mut Frame, app: &App, x: u16, y: u16) {
     put_line(frame, x, y + 1, &text, style);
 }
 
-/// Adaptive layout used on terminals smaller than the original 80x25 screen.
-fn draw_compact(frame: &mut Frame, app: &mut App, area: Rect) {
-    let footer_h = FOOTER_ROWS.min(area.height);
+/// Number of bytes on each line of the adaptive layout.  The line is
+/// `8 hex digits + space + 32n hex + (n-1) group gaps + 2 + 16n characters +
+/// (n-1) group gaps`, i.e. `50n + 9` columns for `n` sixteen-byte groups.
+/// Keeping whole groups means every line is a multiple of 16 bytes.
+fn adaptive_bytes_per_row(width: u16) -> usize {
+    let groups = ((width as usize).saturating_sub(9) / 50).clamp(1, 8);
+    groups * 16
+}
+
+/// Adaptive layout used at every size except the original 80x25 screen.  Both
+/// windows, the position band and the footer are sized from the terminal, so
+/// the display fills most of the enclosing window.  Data lines are widened by
+/// whole sixteen-byte groups on the horizontal axis and by whole lines on the
+/// vertical axis.
+fn draw_adaptive(frame: &mut Frame, app: &mut App, area: Rect) {
+    // On very short terminals the footer shrinks before the data does.
+    let footer_h = FOOTER_ROWS.min(area.height).min((area.height / 3).max(1));
     let body_h = area.height.saturating_sub(footer_h);
-    // Keep the panes usable on short terminals; drop the middle band if
-    // there is not enough room for both boxes and at least a few data rows.
-    let middle_h = if body_h >= 18 { MIDDLE_ROWS } else { 0 };
+    // Two rows for the `Hex`/`Dec` values and previews; they are dropped when
+    // there is not enough room for a useful amount of data.
+    let middle_h = if body_h >= 12 { 2 } else { 0 };
     let panes_h = body_h.saturating_sub(middle_h);
     let top_h = panes_h / 2;
     let bottom_h = panes_h - top_h;
@@ -350,14 +362,51 @@ fn draw_compact(frame: &mut Frame, app: &mut App, area: Rect) {
     let bottom = Rect::new(area.x, area.y + top_h + middle_h, area.width, bottom_h);
     let footer = Rect::new(area.x, area.y + body_h, area.width, footer_h);
 
-    app.rows_per_pane = top_h.saturating_sub(1) as usize;
+    let bytes_per_row = adaptive_bytes_per_row(area.width);
+    // Both windows must use the same row count for cursor movement, so take
+    // the smaller of the two bodies (they differ by at most one row).
+    let rows = top_h.saturating_sub(1).min(bottom_h.saturating_sub(1)) as usize;
+    app.sync_geometry(rows, bytes_per_row);
+
     draw_pane(frame, app, 0, top);
     draw_pane(frame, app, 1, bottom);
     if middle_h > 0 {
-        draw_middle(frame, app, middle);
-        draw_position_markers(frame, app, top, middle, bottom);
+        draw_adaptive_middle(frame, app, middle);
     }
     draw_footer(frame, app, footer);
+}
+
+/// The two-line adaptive position band: cursor offset in both notations and
+/// the original 64-byte preview, truncated to whatever space remains.
+fn draw_adaptive_middle(frame: &mut Frame, app: &mut App, rect: Rect) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let theme = app.options.theme;
+    let normal = Style::default().fg(theme.fg()).bg(theme.bg());
+
+    for index in 0..2usize {
+        if index as u16 >= rect.height {
+            break;
+        }
+        let y = rect.y + index as u16;
+        let active = app.active == index;
+        let style = if active { bar_style(theme) } else { normal };
+        if active {
+            restyle_cells(frame, rect.x, y, rect.x + rect.width, style);
+        }
+
+        let cursor = app.panes[index].cursor;
+        let mut text = format!("Hex {:08X}  Dec {}", cursor, cursor);
+        let used = text.chars().count();
+        if (rect.width as usize) > used + 8 {
+            text.push_str("  ");
+            let room = rect.width as usize - used - 2;
+            let preview = preview_text(app, index);
+            text.extend(preview.chars().take(room.min(PREVIEW_LEN)));
+        }
+        put_line(frame, rect.x, y, &text, style);
+    }
 }
 
 fn draw_pane(frame: &mut Frame, app: &mut App, index: usize, rect: Rect) {
@@ -449,8 +498,9 @@ fn draw_pane(frame: &mut Frame, app: &mut App, index: usize, rect: Rect) {
     }
 
     let mut lines: Vec<Line> = Vec::with_capacity(rows);
+    let bpr = app.bytes_per_row.max(16) as u64;
     for row in 0..rows {
-        let offset = top.saturating_add((row as u64) * 16);
+        let offset = top.saturating_add((row as u64) * bpr);
         lines.push(hex_line(app, index, offset));
     }
     frame.render_widget(
@@ -466,6 +516,7 @@ fn hex_line(app: &mut App, index: usize, offset: u64) -> Line<'static> {
     let compare = app.compare_mode;
     let ebcdic = app.options.ebcdic;
     let conceal = app.options.conceal;
+    let bpr = app.bytes_per_row.max(16);
 
     let normal = Style::default().fg(theme.fg()).bg(theme.bg());
     let dim = Style::default().fg(theme.dim()).bg(theme.bg());
@@ -476,55 +527,64 @@ fn hex_line(app: &mut App, index: usize, offset: u64) -> Line<'static> {
     let diff_style = Style::default().fg(theme.diff_fg()).bg(theme.diff_bg());
     let offset_style = Style::default().fg(theme.accent()).bg(theme.bg());
 
-    let mut spans = Vec::with_capacity(40);
+    let mut spans = Vec::with_capacity(3 * bpr + 16);
     spans.push(Span::styled(format!("{offset:08X} "), offset_style));
 
-    let mut bytes = Vec::with_capacity(16);
-    let mut other = Vec::with_capacity(16);
-    for i in 0..16 {
-        bytes.push(byte_at(app, index, offset + i));
+    let mut bytes = Vec::with_capacity(bpr);
+    let mut other = Vec::with_capacity(bpr);
+    for i in 0..bpr {
+        bytes.push(byte_at(app, index, offset + i as u64));
         other.push(if compare {
-            byte_at(app, 1 - index, offset + i)
+            byte_at(app, 1 - index, offset + i as u64)
         } else {
             None
         });
     }
 
-    let mut ascii = Vec::with_capacity(16);
-    for i in 0..16 {
+    // Styles are computed once so the hex pair and the character column can
+    // share the cursor/difference attribute.
+    let mut styles = Vec::with_capacity(bpr);
+    for i in 0..bpr {
         let off = offset + i as u64;
-        let b = bytes[i];
-        let ob = other[i];
         let is_cursor = active && off == cursor;
         // In compare mode a byte that exists in one file but not the other is
         // a length difference; equal bytes are shown normally.  `**` is
         // reserved for positions past the end of *this* file, matching the
         // original renderer (CS:0x3ba9 writes `**` when CS:0x3884 reports no
         // byte).
-        let differs = compare && b != ob;
-        let style = if is_cursor && active {
+        let differs = compare && bytes[i] != other[i];
+        styles.push(if is_cursor {
             cursor_style
         } else if differs {
             diff_style
         } else {
             normal
-        };
+        });
+    }
 
-        match b {
-            Some(v) => {
-                spans.push(Span::styled(format!("{v:02X} "), style));
-                let ch = codec::display_byte(v, ebcdic, conceal);
-                ascii.push(Span::styled(ch.to_string(), style));
-            }
-            None => {
-                spans.push(Span::styled("** ", dim));
-                ascii.push(Span::styled(" ", dim));
-            }
+    for i in 0..bpr {
+        if i > 0 && i % 16 == 0 {
+            spans.push(Span::raw(" "));
+        }
+        match bytes[i] {
+            Some(v) => spans.push(Span::styled(format!("{v:02X}"), styles[i])),
+            None => spans.push(Span::styled("**", dim)),
         }
     }
 
-    spans.push(Span::raw(" "));
-    spans.extend(ascii);
+    spans.push(Span::raw("  "));
+    for i in 0..bpr {
+        if i > 0 && i % 16 == 0 {
+            spans.push(Span::raw(" "));
+        }
+        match bytes[i] {
+            Some(v) => {
+                let ch = codec::display_byte(v, ebcdic, conceal);
+                spans.push(Span::styled(ch.to_string(), styles[i]));
+            }
+            None => spans.push(Span::styled(" ", dim)),
+        }
+    }
     Line::from(spans)
 }
 
@@ -538,233 +598,10 @@ fn byte_at(app: &mut App, index: usize, offset: u64) -> Option<u8> {
         .flatten()
 }
 
-/// Width of the two offset boxes in the middle band.  The original uses a
-/// 12-character interior: `Hex ` plus eight hex digits, and `Dec ` plus the
-/// decimal offset.
-const BOX_W: u16 = 14;
-
-/// The six box lines, in order: the top window's `Hex`/`Dec` pair, then the
-/// bottom window's `Dec`/`Hex` pair.  Both windows' boxes share the same
-/// screen rows; only the corner/guide characters differ.
-///
-/// ```text
-/// ╔════════════╗
-/// ║Hex 00000000╠═══════════════╩═╦╝
-/// ╚Dec 0       ║
-/// ╔Dec 0       ║
-/// ║Hex 00000000╠═══════════════╦═╩╗
-/// ╚════════════╝
-/// ```
-fn box_lines(app: &App) -> [String; 6] {
-    let cw = (BOX_W - 2) as usize;
-    let rule = "═".repeat(cw);
-    [
-        format!("╔{rule}╗"),
-        format!("║{}╠", fit_hex("Hex ", row_start(app, 0), cw)),
-        format!("╚{}║", fit_dec("Dec ", row_start(app, 0), cw)),
-        format!("╔{}║", fit_dec("Dec ", row_start(app, 1), cw)),
-        format!("║{}╠", fit_hex("Hex ", row_start(app, 1), cw)),
-        format!("╚{rule}╝"),
-    ]
-}
-
-/// First byte of the sixteen-byte row that contains this window's cursor.
-fn row_start(app: &App, index: usize) -> u64 {
-    app.panes[index].cursor & !0xF
-}
-
-/// Draw the original's middle section: two overlapping `Hex`/`Dec` position
-/// boxes on the left.  The preview lines and crosshair are added afterwards,
-/// because their starting column depends on the cursor's byte column.
-fn draw_middle(frame: &mut Frame, app: &App, rect: Rect) {
-    let theme = app.options.theme;
-    let base = Style::default().fg(theme.fg()).bg(theme.bg());
-    frame.render_widget(Block::default().style(base), rect);
-    if rect.height < 6 || rect.width < BOX_W + 12 {
-        return;
-    }
-
-    let active_style = Style::default().fg(theme.cursor_fg()).bg(theme.cursor_bg());
-
-    let lines = box_lines(app);
-    for (i, line) in lines.iter().enumerate() {
-        put_line(
-            frame,
-            rect.x,
-            rect.y + i as u16,
-            line,
-            Style::default().fg(theme.fg()).bg(theme.bg()),
-        );
-    }
-
-    // The active window's value cells are reverse video; the labels and box
-    // borders stay in the normal colour, as in the original.
-    let value_row = if app.active == 0 { 1 } else { 4 };
-    restyle_cells(
-        frame,
-        rect.x + 5,
-        rect.y + value_row,
-        rect.x + BOX_W - 1,
-        active_style,
-    );
-}
-
-/// Box-drawing crosshair that joins each position box to the cursor byte:
-/// horizontal guides in the middle band and vertical double lines running
-/// from the band to the byte.
-fn draw_position_markers(frame: &mut Frame, app: &mut App, top: Rect, middle: Rect, bottom: Rect) {
-    if middle.height < 4 || middle.width < BOX_W + 12 {
-        return;
-    }
-    let theme = app.options.theme;
-    let style = Style::default().fg(theme.fg()).bg(theme.bg());
-    for (index, rect) in [(0usize, top), (1usize, bottom)] {
-        let marker = marker_columns(app, index, rect);
-        if let Some((left, right, row)) = marker {
-            let body_y = rect.y + 1;
-            let body_h = rect.height.saturating_sub(1);
-            if index == 0 {
-                // Frame opens downwards: current row to the bottom of the pane.
-                put_cell(frame, left, body_y + row, "╓", style);
-                put_cell(frame, right, body_y + row, "╖", style);
-                for y in body_y + row + 1..body_y + body_h {
-                    put_cell(frame, left, y, "║", style);
-                    put_cell(frame, right, y, "║", style);
-                }
-                if left > middle.x + BOX_W {
-                    put_cell(frame, left, middle.y, "║", style);
-                    put_cell(frame, right, middle.y, "║", style);
-                }
-                draw_guide(frame, middle, 1, left, right, "╩", style);
-            } else {
-                for y in body_y..body_y + row {
-                    put_cell(frame, left, y, "║", style);
-                    put_cell(frame, right, y, "║", style);
-                }
-                put_cell(frame, left, body_y + row, "╙", style);
-                put_cell(frame, right, body_y + row, "╜", style);
-                if left > middle.x + BOX_W {
-                    put_cell(frame, left, middle.y + middle.height - 1, "║", style);
-                    put_cell(frame, right, middle.y + middle.height - 1, "║", style);
-                }
-                draw_guide(frame, middle, 4, left, right, "╦", style);
-            }
-        }
-        // Previews sit on the `Dec` rows, below the top window's guide and
-        // above the bottom window's guide.  Start them under the cursor byte
-        // so the preview lines up with the highlighted position.
-        draw_preview(frame, app, middle, index);
-    }
-}
-
-/// One-line character preview of the sixty-four bytes around this window's
-/// cursor.  The original builds the line in `CS:0x171F` from the four display
-/// rows around the cursor (`CS:0x3233` → `CS:0x32BF`) and draws it with slot 4
-/// at column 15, immediately right of the `Hex`/`Dec` box.  Bytes before the
-/// start of the file or past its end leave blanks.  The active window's line is
-/// drawn as a reverse-video bar starting after the `Dec ` label, matching the
-/// original.
-fn draw_preview(frame: &mut Frame, app: &mut App, middle: Rect, index: usize) {
-    let row = if index == 0 { 2 } else { 3 };
-    if middle.y + row >= middle.bottom() || middle.width <= BOX_W {
-        return;
-    }
-    let theme = app.options.theme;
-    let active = app.active == index;
-    let normal = Style::default().fg(theme.fg()).bg(theme.bg());
-    let bar = Style::default().fg(theme.cursor_fg()).bg(theme.cursor_bg());
-    let y = middle.y + row;
-    let preview_x = middle.x + BOX_W + 1;
-    if active {
-        // The original applies the active attribute to slot 3 (the value
-        // cells, columns 5-12) and slot 4 (the preview, columns 15-78).  The
-        // border and the one-column gap keep their normal colours.
-        let bar_x = middle.x + 5;
-        let value_end = middle.x + BOX_W - 1;
-        for x in bar_x..value_end {
-            put_cell(frame, x, y, " ", bar);
-        }
-        for x in preview_x..middle.right() {
-            put_cell(frame, x, y, " ", bar);
-        }
-        // Restore the box glyphs, then tint the value/preview areas.
-        let line = box_lines(app)[row as usize].clone();
-        put_line(frame, middle.x, y, &line, normal);
-        restyle_cells(frame, bar_x, y, value_end, bar);
-        restyle_cells(frame, preview_x, y, middle.right(), bar);
-    }
-    put_line(
-        frame,
-        preview_x,
-        y,
-        &preview_text(app, index),
-        if active { bar } else { normal },
-    );
-}
-
-/// Re-apply a style to a row span without changing the glyphs already there.
-fn restyle_cells(frame: &mut Frame, from: u16, y: u16, to: u16, style: Style) {
-    for x in from..to {
-        if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
-            cell.set_style(style);
-        }
-    }
-}
-
-fn draw_guide(
-    frame: &mut Frame,
-    middle: Rect,
-    row: u16,
-    left: u16,
-    right: u16,
-    joint: &str,
-    style: Style,
-) {
-    let y = middle.y + row;
-    if y >= middle.bottom() || right <= middle.x + BOX_W || left <= middle.x + BOX_W {
-        return;
-    }
-    // Do not draw through the byte itself; the guide lives in the band, so
-    // the full connector is safe, but keep it inside the band.
-    for x in middle.x + BOX_W..right {
-        put_cell(frame, x, y, "═", style);
-    }
-    put_cell(frame, left, y, joint, style);
-    put_cell(frame, right, y, joint, style);
-}
-
-/// Screen column of the first and last cell of the cursor byte, plus its row
-/// inside the pane body.  `None` when the cursor is outside the visible rows.
-fn marker_columns(app: &App, index: usize, rect: Rect) -> Option<(u16, u16, u16)> {
-    let pane = &app.panes[index];
-    if pane.file.is_none() || rect.height < 2 {
-        return None;
-    }
-    let rows = rect.height.saturating_sub(1) as u64;
-    let top = pane.top;
-    let cursor = pane.cursor;
-    if cursor < top || cursor >= top.saturating_add(rows * 16) {
-        return None;
-    }
-    let row = ((cursor - top) / 16) as u16;
-    let col = (cursor % 16) as u16;
-    // Address field is 8 hex digits + one space, then 3 columns per byte.
-    let x = rect.x + 9 + col * 3;
-    let left = x.checked_sub(1)?;
-    let right = x + 2;
-    if right >= rect.right() || left < rect.x {
-        return None;
-    }
-    Some((left, right, row))
-}
-
+/// Build the original 64-character preview: bytes `cursor-16` through
+/// `cursor+47`, with blanks outside the file (`CS:0x3233` → `CS:0x32BF`).
 fn preview_text(app: &mut App, index: usize) -> String {
     let cursor = app.panes[index].cursor;
-    // `CS:0x3233` builds a 64-character line in `CS:0x171F` by copying the
-    // sixteeen display characters of the rows around the cursor.  The first
-    // segment starts at character 5 of the row above the cursor (`CS:0x32BF`
-    // with `AL=0` copies from `CS:0x185B`), so the preview begins sixteen bytes
-    // before the cursor.  Bytes outside the file are blank.
     let start = cursor as i64 - 16;
     let ebcdic = app.options.ebcdic;
     let conceal = app.options.conceal;
@@ -783,26 +620,13 @@ fn preview_text(app: &mut App, index: usize) -> String {
     text
 }
 
-fn fit_hex(prefix: &str, value: u64, width: usize) -> String {
-    let digits = format!("{value:08X}");
-    let avail = width.saturating_sub(prefix.chars().count());
-    let shown = if digits.len() > avail {
-        &digits[digits.len() - avail..]
-    } else {
-        &digits[..]
-    };
-    format!("{prefix}{shown:<avail$}")
-}
-
-fn fit_dec(prefix: &str, value: u64, width: usize) -> String {
-    let digits = value.to_string();
-    let avail = width.saturating_sub(prefix.chars().count());
-    let shown = if digits.len() > avail {
-        &digits[digits.len() - avail..]
-    } else {
-        &digits[..]
-    };
-    format!("{prefix}{shown:<avail$}")
+/// Re-apply a style to a row span without changing the glyphs already there.
+fn restyle_cells(frame: &mut Frame, from: u16, y: u16, to: u16, style: Style) {
+    for x in from..to {
+        if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
+            cell.set_style(style);
+        }
+    }
 }
 
 fn put_cell(frame: &mut Frame, x: u16, y: u16, symbol: &str, style: Style) {
@@ -1223,4 +1047,33 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         w,
         h,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A line with `n` sixteen-byte groups is
+    /// `9 + (32n + n-1) + 2 + (16n + n-1)` columns long.
+    fn line_columns(bytes: usize) -> usize {
+        let groups = bytes / 16;
+        9 + (32 * groups + groups - 1) + 2 + (16 * groups + groups - 1)
+    }
+
+    #[test]
+    fn adaptive_lines_are_whole_sixteen_byte_groups() {
+        for width in 59..=400u16 {
+            let bytes = adaptive_bytes_per_row(width);
+            assert_eq!(bytes % 16, 0, "width {width}");
+            assert!(bytes >= 16, "width {width}");
+            assert!(
+                line_columns(bytes) <= width as usize,
+                "width {width} needs {} columns for {bytes} bytes",
+                line_columns(bytes)
+            );
+        }
+        assert_eq!(adaptive_bytes_per_row(80), 16);
+        assert_eq!(adaptive_bytes_per_row(120), 32);
+        assert_eq!(adaptive_bytes_per_row(160), 48);
+    }
 }
