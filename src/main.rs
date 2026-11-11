@@ -2,6 +2,7 @@
 //! `CABLE - Compare And Browse with Limited Editing`.
 
 mod app;
+mod bench;
 mod buffer;
 mod codec;
 mod compare;
@@ -32,7 +33,13 @@ fn run() -> Result<()> {
     let mut options = Options::default();
     let mut paths: Vec<PathBuf> = Vec::new();
 
-    for arg in std::env::args().skip(1) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--bench") {
+        let bench_paths: Vec<PathBuf> = args[1..].iter().map(PathBuf::from).collect();
+        return bench::run(&bench_paths);
+    }
+
+    for arg in &args {
         match arg.as_str() {
             "-h" | "--help" => {
                 usage();
@@ -130,6 +137,7 @@ Options:
   --arm, --thumb    disassemble as ARMv7 / Thumb
   --arm64           disassemble as AArch64
   --disasm=CPU      same as the flags above (CPU: x86, x64, arm, thumb, arm64)
+  --bench           run the non-interactive I/O benchmark
   -h, --help        show this help
   -V, --version     show version"#;
     println!("cable-rs {}{BODY}", env!("CARGO_PKG_VERSION"));

@@ -20,6 +20,9 @@ func main() {
 }
 
 func run() error {
+	if len(os.Args) > 1 && os.Args[1] == "--bench" {
+		return runBench(os.Args[2:])
+	}
 	options := defaultOptions()
 	paths := []string{}
 
@@ -181,6 +184,7 @@ Options:
   --arm, --thumb    disassemble as ARMv7 / Thumb
   --arm64           disassemble as AArch64
   --disasm=CPU      same as the flags above (CPU: x86, x64, arm, thumb, arm64)
+  --bench           run the non-interactive I/O benchmark
   -h, --help        show this help
   -V, --version     show version`
 	fmt.Printf("cable %s (Go port of cable-rs)%s\n", version, body)

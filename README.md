@@ -53,6 +53,41 @@ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$PWD/zig-linux" \
 cargo build --release --target x86_64-pc-windows-gnu
 ```
 
+### Ports and benchmark
+
+Two complete ports live alongside the Rust sources:
+
+- [`cable-go/`](cable-go/) — dependency-free Go port, including cross-compiled
+  `dist/` binaries.
+- [`cable-cpp/`](cable-cpp/) — C++20 port with the same paged I/O and UI;
+  `make`, CMake and cross-build instructions for macOS, Linux and Windows.
+
+All three versions share a non-interactive I/O benchmark:
+
+```sh
+python3 bench/gen_data.py          # ~128 MiB deterministic test files
+python3 bench/run.py --runs 3      # median open/scan/search/compare/save
+```
+
+Run a single implementation with `cable --bench FILE1 [FILE2]`.
+
+Representative medians on Apple silicon, 128 MiB files, three timed runs after
+a warm-up (lower is better):
+
+| Phase | Rust | Go | C++ |
+| --- | ---: | ---: | ---: |
+| open | 0.011 ms | 0.018 ms | 0.014 ms |
+| scan | 190.3 ms | 196.6 ms | 189.6 ms |
+| search | 225.5 ms | 145.2 ms | 226.2 ms |
+| compare | 69.3 ms | 77.2 ms | 68.9 ms |
+| save | 150.9 ms | 136.8 ms | 61.1 ms |
+| **total** | **635.9 ms** | **555.8 ms** | **545.8 ms** |
+
+All three report identical checksums for every phase.  Timings move by a few
+percent between runs (especially `save`, which depends on how much of the copy
+is still cached), so treat the table as indicative rather than a strict
+ranking.
+
 ### Command-line options
 
 | Option | Meaning |
