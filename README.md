@@ -36,8 +36,8 @@ cargo clippy    # optional
 
 | File | Platform |
 | --- | --- |
-| `cable-rs-v0.2.2-linux-x86_64` | Linux ELF, glibc 2.17 or newer |
-| `cable-rs-v0.2.2-windows-x86_64.exe` | Windows 10/11 console (x86-64) |
+| `cable-rs-v0.2.3-linux-x86_64` | Linux ELF, glibc 2.17 or newer |
+| `cable-rs-v0.2.3-windows-x86_64.exe` | Windows 10/11 console (x86-64) |
 
 Both were produced from macOS with rustup targets and two linkers:
 
@@ -133,7 +133,9 @@ Type first letter of command or press ◄─┘ to select hilited command
   widened by whole sixteen-byte groups. A 120-column terminal shows 32 bytes per
   line, 160 columns shows 48, and so on; lines never end on a partial group.
   `Up`/`Down` move by one displayed line, and `PgUp`/`PgDn` by one window, so
-  multi-group lines scroll naturally. The position band keeps the `Hex`/`Dec`
+  multi-group lines scroll naturally. The first file's header sits above the
+  upper window and the second file's header below the lower window, as on the
+  original screen. The position band keeps the `Hex`/`Dec`
   values in fixed-width fields, so growing offsets do not move the preview. The
   preview character at the cursor position is drawn in reverse video and placed
   in the horizontal middle of the hex columns (with four groups, between the

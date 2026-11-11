@@ -484,7 +484,15 @@ fn draw_pane(frame: &mut Frame, app: &mut App, index: usize, rect: Rect) {
         .map(|f| f.is_read_only())
         .unwrap_or(false);
 
-    let header = Rect::new(rect.x, rect.y, rect.width, 1);
+    // The original puts the first file's title above its window and the second
+    // file's title below its window, so the two headers bracket the display.
+    let header_at_bottom = index == 1;
+    let header_y = if header_at_bottom {
+        rect.y + rect.height.saturating_sub(1)
+    } else {
+        rect.y
+    };
+    let header = Rect::new(rect.x, header_y, rect.width, 1);
     // The original inverts the active window's title bar.
     let title_fg = if active { theme.bg() } else { theme.dim() };
     let title_bg = if active {
@@ -537,7 +545,7 @@ fn draw_pane(frame: &mut Frame, app: &mut App, index: usize, rect: Rect) {
 
     let body = Rect::new(
         rect.x,
-        rect.y + 1,
+        if header_at_bottom { rect.y } else { rect.y + 1 },
         rect.width,
         rect.height.saturating_sub(1),
     );
