@@ -166,6 +166,8 @@ fn draw_original_body(frame: &mut Frame, app: &mut App, index: usize, x: u16, y:
         return;
     }
 
+    let disasm = disasm_window(app, index, PANE_ROWS, 16);
+
     for row in 0..PANE_ROWS {
         let row_start = start + (row as i64) * 16;
         let line_y = y + row as u16;
@@ -211,21 +213,6 @@ fn draw_original_body(frame: &mut Frame, app: &mut App, index: usize, x: u16, y:
             }
         }
 
-        if app.options.disasm.is_some() {
-            for (i, (ch, style)) in disasm_cells(app, index, row_start, 16, 16)
-                .into_iter()
-                .enumerate()
-            {
-                put_cell(
-                    frame,
-                    x + ASCII_COL + i as u16,
-                    line_y,
-                    &ch.to_string(),
-                    style,
-                );
-            }
-        }
-
         // The crosshair is fixed at screen columns 29 and 32 (row-string
         // offsets 14 and 17, a row is drawn from column 15).
         let (left, right) = crosshair_chars(index, active, row);
@@ -240,6 +227,23 @@ fn draw_original_body(frame: &mut Frame, app: &mut App, index: usize, x: u16, y:
         if active && row == CURSOR_ROW {
             let cx = x + DATA_COL + (CURSOR_SLOT as u16) * 3;
             restyle_cells(frame, cx, line_y, cx + 2, bar_style(theme));
+        }
+    }
+
+    // Draw the vertical instruction listing over the right-hand character
+    // area.  The cursor's instruction was placed on the middle row by
+    // `disasm_window`.
+    if app.options.disasm.is_some() {
+        for (row, cells) in disasm.iter().enumerate() {
+            for (i, (ch, style)) in cells.iter().enumerate() {
+                put_cell(
+                    frame,
+                    x + ASCII_COL + i as u16,
+                    y + row as u16,
+                    &ch.to_string(),
+                    *style,
+                );
+            }
         }
     }
 }
@@ -582,19 +586,43 @@ fn draw_pane(frame: &mut Frame, app: &mut App, index: usize, rect: Rect) {
         return;
     }
 
-    let mut lines: Vec<Line> = Vec::with_capacity(rows);
     let bpr = app.bytes_per_row.max(16) as u64;
+    let mut lines: Vec<Line> = Vec::with_capacity(rows);
     for row in 0..rows {
         let offset = top.saturating_add((row as u64) * bpr);
-        lines.push(hex_line(app, index, offset, body.width as usize));
+        lines.push(hex_line(app, index, offset));
     }
     frame.render_widget(
         Paragraph::new(Text::from(lines)).style(Style::default().fg(theme.fg()).bg(theme.bg())),
         body,
     );
+
+    // The disassembly view is a vertical listing in the right-hand character
+    // area: one instruction per screen row, with the instruction at the cursor
+    // on the middle row and the rest scrolling around it.
+    if app.options.disasm.is_some() {
+        let groups = (bpr as usize / 16).max(1);
+        let prefix = 9 + (33 * groups - 1) + 2;
+        if prefix < body.width as usize {
+            let width = body.width as usize - prefix;
+            let window = disasm_window(app, index, rows, width);
+            for (row, cells) in window.iter().enumerate() {
+                let y = body.y + row as u16;
+                for (i, (ch, style)) in cells.iter().enumerate() {
+                    put_cell(
+                        frame,
+                        body.x + prefix as u16 + i as u16,
+                        y,
+                        &ch.to_string(),
+                        *style,
+                    );
+                }
+            }
+        }
+    }
 }
 
-fn hex_line(app: &mut App, index: usize, offset: u64, body_width: usize) -> Line<'static> {
+fn hex_line(app: &mut App, index: usize, offset: u64) -> Line<'static> {
     let theme = app.options.theme;
     let active = app.active == index;
     let cursor = app.panes[index].cursor;
@@ -658,30 +686,7 @@ fn hex_line(app: &mut App, index: usize, offset: u64, body_width: usize) -> Line
     }
 
     spans.push(Span::raw("  "));
-    if app.options.disasm.is_some() {
-        // The right-hand columns show instructions instead of characters.  The
-        // hex field is `33n - 1` wide after the nine-column offset and the two
-        // spaces before the text, so everything else is available.
-        let groups = (bpr / 16).max(1);
-        let prefix = 9 + (33 * groups - 1) + 2;
-        let width = body_width.saturating_sub(prefix);
-        let cells = disasm_cells(app, index, offset as i64, bpr, width);
-        let mut current: Option<(Style, String)> = None;
-        for (ch, style) in cells {
-            match current.as_mut() {
-                Some((s, text)) if *s == style => text.push(ch),
-                Some((s, text)) => {
-                    spans.push(Span::styled(std::mem::take(text), *s));
-                    *s = style;
-                    text.push(ch);
-                }
-                None => current = Some((style, ch.to_string())),
-            }
-        }
-        if let Some((style, text)) = current {
-            spans.push(Span::styled(text, style));
-        }
-    } else {
+    if app.options.disasm.is_none() {
         for i in 0..bpr {
             if i > 0 && i % 16 == 0 {
                 spans.push(Span::raw(" "));
@@ -698,103 +703,72 @@ fn hex_line(app: &mut App, index: usize, offset: u64, body_width: usize) -> Line
     Line::from(spans)
 }
 
-/// Render the right-hand column of one row as instructions.  The result is a
-/// list of `(character, style)` cells, padded to `width`, so both the adaptive
-/// and the original renderer can place them.  `row_start` is the absolute file
-/// offset of the row's first byte.
-fn disasm_cells(
+/// Build a vertically centred instruction listing for one window.  The
+/// instruction containing the cursor is placed on the middle row, earlier
+/// instructions above it and later ones below.  Each entry is one screen row
+/// of `(character, style)` cells, padded to `width`.
+///
+/// Decoding starts on a 256-byte boundary rather than at the cursor, so the
+/// instruction boundaries stay stable while the cursor moves inside a block.
+/// The listing then scrolls one instruction at a time to keep the current
+/// instruction on the middle row.
+fn disasm_window(
     app: &mut App,
     index: usize,
-    row_start: i64,
-    row_len: usize,
+    rows: usize,
     width: usize,
-) -> Vec<(char, Style)> {
-    let Some(cpu) = app.options.disasm else {
-        return Vec::new();
-    };
+) -> Vec<Vec<(char, Style)>> {
     let theme = app.options.theme;
     let normal = Style::default().fg(theme.fg()).bg(theme.bg());
-    let cursor_style = Style::default()
-        .fg(theme.cursor_fg())
-        .bg(theme.cursor_bg())
-        .add_modifier(Modifier::BOLD);
+    // The current instruction is shown in bold rather than as a reversed
+    // block, so the listing stays easy to scan.
+    let current_style = normal.add_modifier(Modifier::BOLD);
     let diff_style = Style::default().fg(theme.diff_fg()).bg(theme.diff_bg());
+
+    let mut out = vec![vec![(' ', normal); width]; rows];
+    let Some(cpu) = app.options.disasm else {
+        return out;
+    };
+    if rows == 0 || width == 0 || app.panes[index].file.is_none() {
+        return out;
+    }
+
     let compare = app.compare_mode;
     let cursor = app.panes[index].cursor;
+    let center = rows / 2;
 
-    // Rows before the beginning of the file (only possible on the fixed 80x25
-    // screen) are decoded from offset zero and drawn from the text column, with
-    // leading blanks for the cells that precede the first byte.
-    let lead = if row_start < 0 {
-        (-row_start) as usize
-    } else {
-        0
-    };
-    if lead >= width {
-        return vec![(' ', normal); width];
-    }
-    let start = row_start.max(0) as u64;
-    let count = row_len.saturating_sub(lead);
-    let mut bytes = Vec::with_capacity(count);
-    for i in 0..count {
-        match byte_at(app, index, start + i as u64) {
+    // Decode a generous window around the cursor.  Rounding the start to 256
+    // bytes keeps instruction alignment stable while scrolling through a block.
+    let anchor = (cursor.saturating_sub(512) / 256) * 256;
+    let end = cursor.saturating_add(512).min(app.panes[index].len());
+    let mut bytes = Vec::with_capacity(end.saturating_sub(anchor) as usize);
+    for off in anchor..end {
+        match byte_at(app, index, off) {
             Some(b) => bytes.push(b),
             None => break,
         }
     }
-
     let insns = crate::disasm::disassemble(cpu, &bytes);
-    // Keep the instruction at the cursor visible even when earlier
-    // instructions in the same row would fill the column.  Earlier rows still
-    // start at their first byte and simply clip.
-    let rel_cursor = if cursor >= start {
-        Some((cursor - start) as usize)
-    } else {
-        None
-    };
-    let cursor_idx = rel_cursor.and_then(|rc| {
-        insns
-            .iter()
-            .position(|i| rc >= i.offset && rc < i.offset + i.len)
-    });
-    let mut first = 0usize;
-    if let Some(ci) = cursor_idx {
-        // Reserve room for an ellipsis when earlier instructions are dropped.
-        let mut needed = insns[ci].text.chars().count().min(width.saturating_sub(3));
-        let mut at = ci;
-        while at > 0 {
-            let extra = 2 + insns[at - 1].text.chars().count();
-            if needed + extra > width.saturating_sub(3) {
-                break;
-            }
-            needed += extra;
-            at -= 1;
-        }
-        first = at;
+    if insns.is_empty() {
+        return out;
     }
 
-    let mut cells: Vec<(char, Style)> = vec![(' ', normal); lead];
-    if first > 0 && width.saturating_sub(lead) >= 3 {
-        cells.push(('.', normal));
-        cells.push(('.', normal));
-        cells.push((' ', normal));
-    }
-    for (n, insn) in insns.iter().enumerate().skip(first) {
-        if cells.len() >= width {
-            break;
+    let rel = cursor.saturating_sub(anchor) as usize;
+    let ci = insns.iter().rposition(|i| i.offset <= rel).unwrap_or(0);
+    let on_instruction = rel >= insns[ci].offset && rel < insns[ci].offset + insns[ci].len;
+
+    for (row, cells) in out.iter_mut().enumerate() {
+        let target = row as isize - center as isize;
+        let idx = ci as isize + target;
+        if idx < 0 || idx >= insns.len() as isize {
+            continue;
         }
-        if n > first {
-            if cells.len() + 2 > width {
-                break;
-            }
-            cells.push((' ', normal));
-            cells.push((' ', normal));
-        }
-        let abs_start = start + insn.offset as u64;
-        let is_cursor = cursor >= abs_start && cursor < abs_start + insn.len as u64;
+        let insn = &insns[idx as usize];
+        let abs = anchor + insn.offset as u64;
+        let is_cursor = on_instruction && idx as usize == ci;
         let differs = compare
             && (0..insn.len).any(|k| {
-                let off = abs_start + k as u64;
+                let off = abs + k as u64;
                 match (byte_at(app, index, off), byte_at(app, 1 - index, off)) {
                     (Some(a), Some(b)) => a != b,
                     (None, None) => false,
@@ -802,26 +776,21 @@ fn disasm_cells(
                 }
             });
         let style = if is_cursor {
-            cursor_style
+            current_style
         } else if differs {
             diff_style
         } else {
             normal
         };
-        for ch in insn.text.chars() {
-            if cells.len() >= width {
-                break;
-            }
-            cells.push((ch, style));
-        }
-        if cells.len() >= width {
-            break;
-        }
+        let text = if width >= 24 {
+            format!("{abs:08X}  {}", insn.text)
+        } else {
+            insn.text.clone()
+        };
+        *cells = text.chars().take(width).map(|ch| (ch, style)).collect();
+        cells.resize(width, (' ', normal));
     }
-    while cells.len() < width {
-        cells.push((' ', normal));
-    }
-    cells
+    out
 }
 
 fn byte_at(app: &mut App, index: usize, offset: u64) -> Option<u8> {
@@ -1347,5 +1316,34 @@ mod tests {
         let bpr = adaptive_bytes_per_row(160);
         assert_eq!(bpr, 48);
         assert_eq!(adaptive_hex_center(bpr, 9), 58);
+    }
+
+    #[test]
+    fn disasm_window_centres_the_cursor_instruction() {
+        let path = std::env::temp_dir().join(format!("cable-ui-{}.bin", std::process::id()));
+        std::fs::write(&path, [0x90u8; 64]).unwrap();
+        let mut options = crate::app::Options::default();
+        options.disasm = Some(crate::disasm::Cpu::X86);
+        let mut app = crate::app::App::new(&[path.clone()], options).unwrap();
+        app.panes[0].cursor = 4;
+
+        let rows = 9;
+        let window = disasm_window(&mut app, 0, rows, 40);
+        assert_eq!(window.len(), rows);
+        assert!(window.iter().all(|row| row.len() == 40));
+
+        // One NOP per row, and the listing is scrolled so that the instruction
+        // containing the cursor (offset 4) lands on the middle row.
+        for (row, cells) in window.iter().enumerate() {
+            let line: String = cells.iter().map(|(ch, _)| *ch).collect();
+            assert!(
+                line.starts_with(&format!("{row:08X}  nop")),
+                "row {row}: {line:?}"
+            );
+        }
+        assert!(!window[0][0].1.add_modifier.contains(Modifier::BOLD));
+        assert!(window[rows / 2][0].1.add_modifier.contains(Modifier::BOLD));
+
+        std::fs::remove_file(path).unwrap();
     }
 }

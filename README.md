@@ -195,13 +195,18 @@ ASCII/EBCDIC. `F8` cycles through characters, x86 (32-bit), x64, ARM
 the active view. The same choice is available at start-up with `--x86`,
 `--x64`, `--arm`, `--thumb`, `--arm64`, `--text` or `--disasm=CPU`.
 
-Instruction text is decoded from each displayed row. When the cursor's
-instruction would fall outside the column, the text starts at that instruction
-and is prefixed with `..`; the instruction containing the cursor is highlighted,
-and differing instructions are tinted in compare mode. Decoding failures are
+The right-hand column becomes a vertical instruction listing: one instruction
+per screen row, with the instruction at the cursor on the middle row and the
+listing scrolling as the cursor moves. That instruction is drawn in bold, and
+in compare mode instructions whose bytes differ are tinted. Each line starts
+with the file offset when the column is at least 24 cells wide; the fixed
+80×25 screen keeps its original sixteen-character column, so there the offset
+is omitted and long instructions are clipped.
+
+Decoding starts on a 256-byte boundary around the cursor so instruction
+boundaries stay stable while moving inside a block. Decoding failures are
 shown as `.byte`, `.hword` or `.word` directives. The view is read-only: `Edit`
-refuses to start while it is active. The 80×25 screen keeps its original
-sixteen-character text column, so long instructions are clipped there.
+refuses to start while it is active.
 
 ### Offset input (`+`, `-`, `=`)
 
