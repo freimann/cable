@@ -10,6 +10,7 @@ use crate::buffer::PagedFile;
 use crate::codec;
 use crate::compare;
 use crate::dir::{DirBrowser, SortKey};
+use crate::disasm::Cpu;
 use crate::help;
 
 pub const MENU: [(&str, char); 14] = [
@@ -166,6 +167,9 @@ pub struct Options {
     /// true moves both windows together (`SL:Both`).
     pub move_both: bool,
     pub theme: Theme,
+    /// Right-hand character view: `None` shows ASCII/EBCDIC, `Some(cpu)`
+    /// shows passive disassembly for that instruction set.
+    pub disasm: Option<Cpu>,
 }
 
 impl Default for Options {
@@ -178,6 +182,7 @@ impl Default for Options {
             hex_input: false,
             move_both: false,
             theme: Theme::Classic,
+            disasm: None,
         }
     }
 }
@@ -209,6 +214,24 @@ impl Options {
 
     pub fn scroll_lock(&self) -> &'static str {
         if self.move_both { "Both" } else { "Active" }
+    }
+
+    /// Name of the right-hand character view.  Without a disassembly CPU this
+    /// is the active character set, so the status line is unchanged in text
+    /// mode.
+    pub fn side_view(&self) -> &'static str {
+        match self.disasm {
+            Some(cpu) => cpu.label(),
+            None => self.charset(),
+        }
+    }
+
+    /// Advance the side view through every CPU and back to characters.
+    pub fn cycle_side_view(&mut self) {
+        self.disasm = match self.disasm {
+            None => Some(Cpu::X86),
+            Some(cpu) => cpu.next(),
+        };
     }
 }
 
@@ -431,7 +454,7 @@ impl App {
         }
         let mut s = format!(
             "{}  {}  {}  {}  {}  SL:{}",
-            self.options.charset(),
+            self.options.side_view(),
             self.options.direction(),
             self.options.case(),
             self.options.show(),
@@ -449,12 +472,13 @@ impl App {
 
     pub fn fkey_line(&self) -> String {
         format!(
-            "F1:Help  F2:{}  F3:{}  F4:{}  F5:{}  F6:{}  Tab:Active",
+            "F1:Help  F2:{}  F3:{}  F4:{}  F5:{}  F6:{}  F8:{}  Tab:Active",
             self.options.case(),
             self.options.direction(),
             self.options.input(),
             self.options.show(),
-            self.options.charset()
+            self.options.charset(),
+            self.options.side_view()
         )
     }
 
@@ -535,6 +559,10 @@ impl App {
             KeyCode::F(6) => {
                 self.options.ebcdic = !self.options.ebcdic;
                 self.set_message(format!("Character set: {}", self.options.charset()));
+            }
+            KeyCode::F(8) => {
+                self.options.cycle_side_view();
+                self.set_message(format!("Side view: {}", self.options.side_view()));
             }
             KeyCode::F(9) => {
                 self.menu_index = (self.menu_index + MENU.len() - 1) % MENU.len();
@@ -774,6 +802,10 @@ impl App {
     fn start_edit(&mut self) {
         if self.panes[self.active].file.is_none() {
             self.set_message("No file to edit");
+            return;
+        }
+        if self.options.disasm.is_some() {
+            self.set_message("Edit unavailable in disassembly view");
             return;
         }
         self.edit = Some(EditState { nibble: None });
@@ -1562,5 +1594,30 @@ mod tests {
             KeyCode::Char('l'),
             KeyModifiers::empty()
         )));
+    }
+
+    #[test]
+    fn side_view_cycles_back_to_characters() {
+        let mut options = Options::default();
+        assert_eq!(options.side_view(), "ASCII");
+        for expected in ["x86", "x64", "ARM", "Thumb", "ARM64"] {
+            options.cycle_side_view();
+            assert_eq!(options.side_view(), expected);
+        }
+        options.cycle_side_view();
+        assert!(options.disasm.is_none());
+        assert_eq!(options.side_view(), "ASCII");
+    }
+
+    #[test]
+    fn disassembly_view_blocks_editing() {
+        let path = temp_file("disasm.bin", &[0u8; 64]);
+        let mut options = Options::default();
+        options.disasm = Some(crate::disasm::Cpu::X86);
+        let mut app = App::new(&[path.clone()], options).unwrap();
+        app.start_edit();
+        assert!(app.edit.is_none());
+        assert!(app.message.as_deref().unwrap_or("").contains("disassembly"));
+        fs::remove_file(path).unwrap();
     }
 }

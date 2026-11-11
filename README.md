@@ -36,8 +36,8 @@ cargo clippy    # optional
 
 | File | Platform |
 | --- | --- |
-| `cable-rs-v0.2.3-linux-x86_64` | Linux ELF, glibc 2.17 or newer |
-| `cable-rs-v0.2.3-windows-x86_64.exe` | Windows 10/11 console (x86-64) |
+| `cable-rs-v0.2.4-linux-x86_64` | Linux ELF, glibc 2.17 or newer |
+| `cable-rs-v0.2.4-windows-x86_64.exe` | Windows 10/11 console (x86-64) |
 
 Both were produced from macOS with rustup targets and two linkers:
 
@@ -180,11 +180,28 @@ Type the first letter of a command, or move the highlight with `Space` / `F9` /
 | `F4` | toggle character/HEX input |
 | `F5` | toggle conceal/show |
 | `F6` | toggle ASCII/EBCDIC |
+| `F8` | cycle the right-hand column: characters, x86, x64, ARM, Thumb, ARM64 |
 | `Scroll Lock` / `F7` / `Ctrl+L` / `Ctrl+B` | toggle `SL:Active` (active window only) / `SL:Both` (both windows) |
 | `F9` / `F10` | move the highlighted menu command |
 | `Space` | advance the highlighted menu command |
 | `Enter` | run the highlighted command |
 | `Esc` | close a modal / leave compare display |
+
+### Side view (disassembly)
+
+The right-hand character column can show passive disassembly instead of
+ASCII/EBCDIC. `F8` cycles through characters, x86 (32-bit), x64, ARM
+(ARMv7/A32), Thumb and ARM64/AArch64; the status and function-key lines name
+the active view. The same choice is available at start-up with `--x86`,
+`--x64`, `--arm`, `--thumb`, `--arm64`, `--text` or `--disasm=CPU`.
+
+Instruction text is decoded from each displayed row. When the cursor's
+instruction would fall outside the column, the text starts at that instruction
+and is prefixed with `..`; the instruction containing the cursor is highlighted,
+and differing instructions are tinted in compare mode. Decoding failures are
+shown as `.byte`, `.hword` or `.word` directives. The view is read-only: `Edit`
+refuses to start while it is active. The 80×25 screen keeps its original
+sixteen-character text column, so long instructions are clipped there.
 
 ### Offset input (`+`, `-`, `=`)
 
@@ -277,7 +294,8 @@ The original DIR prompt and scroll footer are reproduced verbatim.
 | `src/codec.rs` | ASCII/EBCDIC (CP037), display characters, offset parsing |
 | `src/compare.rs` | forward/backward search and difference scanning |
 | `src/dir.rs` | directory listing, sorting, path handling |
-| `src/help.rs` | reconstructed help text |
+| `src/disasm.rs` | passive x86/x64/ARM/Thumb/ARM64 instruction decoding |
+| `src/help.rs` | embedded CAB 1.40 help text plus clone-specific key notes |
 | `src/ui.rs` | ratatui panes, footer, modals, directory browser |
 
 ---
@@ -289,7 +307,12 @@ evidence and open questions.
 
 - Compares absolute file offsets rather than each pane's own cursor position.
 - 64 KiB pages instead of the original 4 KiB/4-page cache (invisible to users).
-- Help is built in because the original `cable.hlp` was not supplied.
+- Help is built in. The supplied 1.7X artifact had no help file; the embedded
+  pages are the recovered CAB 1.40 `CAB.HLP`, followed by notes for the keys
+  that differ in this clone.
+- The right-hand column can show passive disassembly (x86/x64/ARM/Thumb/ARM64)
+  through `F8` or the `--disasm` flags. This is a modern aid; the original only
+  had ASCII/EBCDIC, and editing is disabled while it is active.
 - Scroll Lock may not be reported by every terminal (and is missing from most
   Mac keyboards); `F7`, `Ctrl+L`, `Ctrl+B` and `--both` / `--active` provide
   equivalents. Windows terminals that do not deliver `Ctrl+L` as a control
@@ -310,9 +333,10 @@ evidence and open questions.
 - forward/backward search, case-insensitive search,
 - first/last difference, length-difference reporting and Next behaviour,
 - hex/offset parsing, ASCII/EBCDIC display,
+- x86/x64/ARM/Thumb/ARM64 decoding and raw-byte fallbacks,
 - directory sorting by name, extension, date and size.
 
 Manual terminal checks (pty) cover the initial UI, compare/next/search, editing
 in HEX/character, append, save/reload, read-only write errors, quit
 confirmation, directory navigation/sorting/path/target pane, EBCDIC/HEX search,
-offset commands, F2–F6/F9/F10, Tab, Options, Mode and Help.
+offset commands, F2–F6/F8/F9/F10, Tab, Options, Mode and Help.

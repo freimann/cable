@@ -573,9 +573,14 @@ selection, and subdirectory navigation.
 - The original reads an external `cable.hlp`; errors are
   `Error reading Help file` (`CS:0x1256`) and `Help file too big` (`CS:0x1286`).
 
-**Unknown.** `cable.hlp` was not supplied, so its exact wording cannot be
-recovered. The clone's `src/help.rs` reconstructs the help from the embedded
-option/command descriptions and strings, and says so in the text.
+**Recovered.** The supplied 1.7X artifact had no help file, but a genuine
+`CAB.HLP` from version 1.40 was later recovered alongside `cab.com` 1.40. The
+file is 10,480 bytes: CP437 text with CRLF line endings, ten pages, terminated
+by `Ctrl-Z`. The clone embeds its pages verbatim (CP437 arrows translated to
+Unicode) and appends a short note for the commands and keys that changed in
+1.7X and in this clone. Because the recovered file is from 1.40, its command
+summary lists `Xsearch` and omits the later `Edit`, `Options` and `Write`
+commands.
 
 ---
 
@@ -700,7 +705,8 @@ The main string block occupies roughly `CS:0x0700`–`CS:0x1520`
 | Read-only protection | Implemented | POSIX permission based |
 | View file | Implemented | directory `Ctrl+Enter` |
 | Directory with sort/path | Implemented | N/E/D/S |
-| Help | Reconstructed | `cable.hlp` unavailable |
+| Help | Implemented | recovered CAB 1.40 `CAB.HLP` embedded; v1.7X key notes appended |
+| Side-view disassembly (x86/x64/ARM/Thumb/ARM64) | Added | passive only, `F8` / `--disasm`; editing disabled |
 | Mode (Colour/Mono) | Implemented | classic/mono themes |
 | Options menu | Implemented | original order |
 | `+` / `-` / `=` offsets | Implemented | decimal and `H`-prefixed hex |

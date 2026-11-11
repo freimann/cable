@@ -6,6 +6,7 @@ mod buffer;
 mod codec;
 mod compare;
 mod dir;
+mod disasm;
 mod help;
 mod ui;
 
@@ -56,6 +57,22 @@ fn run() -> Result<()> {
             "--forward" => options.forward = true,
             "--both" => options.move_both = true,
             "--active" => options.move_both = false,
+            "--x86" => options.disasm = Some(disasm::Cpu::X86),
+            "--x64" | "--amd64" => options.disasm = Some(disasm::Cpu::X64),
+            "--arm" => options.disasm = Some(disasm::Cpu::Arm),
+            "--thumb" => options.disasm = Some(disasm::Cpu::Thumb),
+            "--arm64" | "--aarch64" => options.disasm = Some(disasm::Cpu::Arm64),
+            "--text" | "--ascii-view" => options.disasm = None,
+            s if s.starts_with("--disasm=") => {
+                let name = &s["--disasm=".len()..];
+                match disasm::Cpu::parse(name) {
+                    Some(cpu) => options.disasm = Some(cpu),
+                    None => {
+                        usage();
+                        bail!("unknown disassembly target {name}");
+                    }
+                }
+            }
             s if s.starts_with('-') => {
                 usage();
                 bail!("unknown option {s}");
@@ -108,6 +125,11 @@ Options:
   --backward        compare/search backwards
   --active          scroll only the active window (default)
   --both            scroll both windows together
+  --text            show ASCII/EBCDIC in the right-hand column (default)
+  --x86, --x64      disassemble the right-hand column as x86 / x86-64
+  --arm, --thumb    disassemble as ARMv7 / Thumb
+  --arm64           disassemble as AArch64
+  --disasm=CPU      same as the flags above (CPU: x86, x64, arm, thumb, arm64)
   -h, --help        show this help
   -V, --version     show version"#;
     println!("cable-rs {}{BODY}", env!("CARGO_PKG_VERSION"));

@@ -1,9 +1,12 @@
 [package]
 name = "cable-rs"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
 crossterm = "0.29.0"
 ratatui = "0.30.2"
+yaxpeax-arch = { version = "0.3.3", default-features = false, features = ["std"] }
+yaxpeax-arm = { version = "0.5.0", default-features = false, features = ["std", "fmt"] }
+yaxpeax-x86 = { version = "2.2.0", default-features = false, features = ["std", "fmt"] }

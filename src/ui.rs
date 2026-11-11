@@ -191,19 +191,38 @@ fn draw_original_body(frame: &mut Frame, app: &mut App, index: usize, x: u16, y:
                         normal
                     };
                     put_cell(frame, bx, line_y, &format!("{:02X}", v), style);
-                    let ch = codec::display_byte(v, ebcdic, conceal);
-                    put_cell(
-                        frame,
-                        x + ASCII_COL + i as u16,
-                        line_y,
-                        &ch.to_string(),
-                        style,
-                    );
+                    if app.options.disasm.is_none() {
+                        let ch = codec::display_byte(v, ebcdic, conceal);
+                        put_cell(
+                            frame,
+                            x + ASCII_COL + i as u16,
+                            line_y,
+                            &ch.to_string(),
+                            style,
+                        );
+                    }
                 }
                 None => {
                     put_cell(frame, bx, line_y, "**", normal);
-                    put_cell(frame, x + ASCII_COL + i as u16, line_y, " ", normal);
+                    if app.options.disasm.is_none() {
+                        put_cell(frame, x + ASCII_COL + i as u16, line_y, " ", normal);
+                    }
                 }
+            }
+        }
+
+        if app.options.disasm.is_some() {
+            for (i, (ch, style)) in disasm_cells(app, index, row_start, 16, 16)
+                .into_iter()
+                .enumerate()
+            {
+                put_cell(
+                    frame,
+                    x + ASCII_COL + i as u16,
+                    line_y,
+                    &ch.to_string(),
+                    style,
+                );
             }
         }
 
@@ -567,7 +586,7 @@ fn draw_pane(frame: &mut Frame, app: &mut App, index: usize, rect: Rect) {
     let bpr = app.bytes_per_row.max(16) as u64;
     for row in 0..rows {
         let offset = top.saturating_add((row as u64) * bpr);
-        lines.push(hex_line(app, index, offset));
+        lines.push(hex_line(app, index, offset, body.width as usize));
     }
     frame.render_widget(
         Paragraph::new(Text::from(lines)).style(Style::default().fg(theme.fg()).bg(theme.bg())),
@@ -575,7 +594,7 @@ fn draw_pane(frame: &mut Frame, app: &mut App, index: usize, rect: Rect) {
     );
 }
 
-fn hex_line(app: &mut App, index: usize, offset: u64) -> Line<'static> {
+fn hex_line(app: &mut App, index: usize, offset: u64, body_width: usize) -> Line<'static> {
     let theme = app.options.theme;
     let active = app.active == index;
     let cursor = app.panes[index].cursor;
@@ -639,19 +658,170 @@ fn hex_line(app: &mut App, index: usize, offset: u64) -> Line<'static> {
     }
 
     spans.push(Span::raw("  "));
-    for i in 0..bpr {
-        if i > 0 && i % 16 == 0 {
-            spans.push(Span::raw(" "));
-        }
-        match bytes[i] {
-            Some(v) => {
-                let ch = codec::display_byte(v, ebcdic, conceal);
-                spans.push(Span::styled(ch.to_string(), styles[i]));
+    if app.options.disasm.is_some() {
+        // The right-hand columns show instructions instead of characters.  The
+        // hex field is `33n - 1` wide after the nine-column offset and the two
+        // spaces before the text, so everything else is available.
+        let groups = (bpr / 16).max(1);
+        let prefix = 9 + (33 * groups - 1) + 2;
+        let width = body_width.saturating_sub(prefix);
+        let cells = disasm_cells(app, index, offset as i64, bpr, width);
+        let mut current: Option<(Style, String)> = None;
+        for (ch, style) in cells {
+            match current.as_mut() {
+                Some((s, text)) if *s == style => text.push(ch),
+                Some((s, text)) => {
+                    spans.push(Span::styled(std::mem::take(text), *s));
+                    *s = style;
+                    text.push(ch);
+                }
+                None => current = Some((style, ch.to_string())),
             }
-            None => spans.push(Span::styled(" ", dim)),
+        }
+        if let Some((style, text)) = current {
+            spans.push(Span::styled(text, style));
+        }
+    } else {
+        for i in 0..bpr {
+            if i > 0 && i % 16 == 0 {
+                spans.push(Span::raw(" "));
+            }
+            match bytes[i] {
+                Some(v) => {
+                    let ch = codec::display_byte(v, ebcdic, conceal);
+                    spans.push(Span::styled(ch.to_string(), styles[i]));
+                }
+                None => spans.push(Span::styled(" ", dim)),
+            }
         }
     }
     Line::from(spans)
+}
+
+/// Render the right-hand column of one row as instructions.  The result is a
+/// list of `(character, style)` cells, padded to `width`, so both the adaptive
+/// and the original renderer can place them.  `row_start` is the absolute file
+/// offset of the row's first byte.
+fn disasm_cells(
+    app: &mut App,
+    index: usize,
+    row_start: i64,
+    row_len: usize,
+    width: usize,
+) -> Vec<(char, Style)> {
+    let Some(cpu) = app.options.disasm else {
+        return Vec::new();
+    };
+    let theme = app.options.theme;
+    let normal = Style::default().fg(theme.fg()).bg(theme.bg());
+    let cursor_style = Style::default()
+        .fg(theme.cursor_fg())
+        .bg(theme.cursor_bg())
+        .add_modifier(Modifier::BOLD);
+    let diff_style = Style::default().fg(theme.diff_fg()).bg(theme.diff_bg());
+    let compare = app.compare_mode;
+    let cursor = app.panes[index].cursor;
+
+    // Rows before the beginning of the file (only possible on the fixed 80x25
+    // screen) are decoded from offset zero and drawn from the text column, with
+    // leading blanks for the cells that precede the first byte.
+    let lead = if row_start < 0 {
+        (-row_start) as usize
+    } else {
+        0
+    };
+    if lead >= width {
+        return vec![(' ', normal); width];
+    }
+    let start = row_start.max(0) as u64;
+    let count = row_len.saturating_sub(lead);
+    let mut bytes = Vec::with_capacity(count);
+    for i in 0..count {
+        match byte_at(app, index, start + i as u64) {
+            Some(b) => bytes.push(b),
+            None => break,
+        }
+    }
+
+    let insns = crate::disasm::disassemble(cpu, &bytes);
+    // Keep the instruction at the cursor visible even when earlier
+    // instructions in the same row would fill the column.  Earlier rows still
+    // start at their first byte and simply clip.
+    let rel_cursor = if cursor >= start {
+        Some((cursor - start) as usize)
+    } else {
+        None
+    };
+    let cursor_idx = rel_cursor.and_then(|rc| {
+        insns
+            .iter()
+            .position(|i| rc >= i.offset && rc < i.offset + i.len)
+    });
+    let mut first = 0usize;
+    if let Some(ci) = cursor_idx {
+        // Reserve room for an ellipsis when earlier instructions are dropped.
+        let mut needed = insns[ci].text.chars().count().min(width.saturating_sub(3));
+        let mut at = ci;
+        while at > 0 {
+            let extra = 2 + insns[at - 1].text.chars().count();
+            if needed + extra > width.saturating_sub(3) {
+                break;
+            }
+            needed += extra;
+            at -= 1;
+        }
+        first = at;
+    }
+
+    let mut cells: Vec<(char, Style)> = vec![(' ', normal); lead];
+    if first > 0 && width.saturating_sub(lead) >= 3 {
+        cells.push(('.', normal));
+        cells.push(('.', normal));
+        cells.push((' ', normal));
+    }
+    for (n, insn) in insns.iter().enumerate().skip(first) {
+        if cells.len() >= width {
+            break;
+        }
+        if n > first {
+            if cells.len() + 2 > width {
+                break;
+            }
+            cells.push((' ', normal));
+            cells.push((' ', normal));
+        }
+        let abs_start = start + insn.offset as u64;
+        let is_cursor = cursor >= abs_start && cursor < abs_start + insn.len as u64;
+        let differs = compare
+            && (0..insn.len).any(|k| {
+                let off = abs_start + k as u64;
+                match (byte_at(app, index, off), byte_at(app, 1 - index, off)) {
+                    (Some(a), Some(b)) => a != b,
+                    (None, None) => false,
+                    _ => true,
+                }
+            });
+        let style = if is_cursor {
+            cursor_style
+        } else if differs {
+            diff_style
+        } else {
+            normal
+        };
+        for ch in insn.text.chars() {
+            if cells.len() >= width {
+                break;
+            }
+            cells.push((ch, style));
+        }
+        if cells.len() >= width {
+            break;
+        }
+    }
+    while cells.len() < width {
+        cells.push((' ', normal));
+    }
+    cells
 }
 
 fn byte_at(app: &mut App, index: usize, offset: u64) -> Option<u8> {
