@@ -29,6 +29,20 @@ pub const MENU: [(&str, char); 14] = [
     ("Write", 'W'),
 ];
 
+/// Keys that toggle the original Scroll Lock state: the key itself, F7 (both
+/// keys are missing or unreliable in some terminals), and Ctrl+L / Ctrl+B.
+/// Windows terminals can report Ctrl+L either as `Char('l')` with CONTROL or
+/// as the bare form-feed character, so both are accepted.
+fn is_scroll_lock_toggle(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::ScrollLock | KeyCode::F(7) | KeyCode::Char('\u{c}') => true,
+        KeyCode::Char('l') | KeyCode::Char('L') | KeyCode::Char('b') | KeyCode::Char('B') => {
+            key.modifiers.contains(KeyModifiers::CONTROL)
+        }
+        _ => false,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Theme {
     Classic,
@@ -475,6 +489,15 @@ impl App {
             return Ok(());
         }
 
+        // Scroll Lock is absent from most Mac keyboards and crossterm does not
+        // report it on Windows, so F7 and Ctrl+L/Ctrl+B are available as
+        // equivalents.  Some Windows terminals deliver Ctrl+L as a bare form
+        // feed instead of Char('l') with CONTROL set, so accept both forms.
+        if is_scroll_lock_toggle(&key) {
+            self.toggle_scroll_lock();
+            return Ok(());
+        }
+
         if self.modal.is_some() {
             return self.handle_modal_key(key);
         }
@@ -486,9 +509,6 @@ impl App {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.try_quit(),
                 KeyCode::Char('s') | KeyCode::Char('S') => self.write_confirm(),
-                // Scroll Lock is missing from most Mac keyboards, so Ctrl+L
-                // provides the same toggle without needing Fn or F7.
-                KeyCode::Char('l') | KeyCode::Char('L') => self.toggle_scroll_lock(),
                 _ => {}
             }
             return Ok(());
@@ -516,7 +536,6 @@ impl App {
                 self.options.ebcdic = !self.options.ebcdic;
                 self.set_message(format!("Character set: {}", self.options.charset()));
             }
-            KeyCode::F(7) | KeyCode::ScrollLock => self.toggle_scroll_lock(),
             KeyCode::F(9) => {
                 self.menu_index = (self.menu_index + MENU.len() - 1) % MENU.len();
                 self.message = None;
@@ -773,14 +792,6 @@ impl App {
     fn handle_edit_key(&mut self, key: KeyEvent) -> Result<()> {
         let rows = self.rows_per_pane;
         let bpr = self.bytes_per_row;
-        // Allow Ctrl+L to toggle Scroll Lock while editing, before its `l`
-        // reaches the data-entry path.
-        if key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('l') | KeyCode::Char('L'))
-        {
-            self.toggle_scroll_lock();
-            return Ok(());
-        }
         match key.code {
             KeyCode::Esc => {
                 self.edit = None;
@@ -1255,7 +1266,7 @@ impl App {
                         'C' => self.activate_mode(1),
                         'H' => self.activate_mode(2),
                         'M' => self.activate_mode(3),
-                        'Q' => {}
+                        'Q' => self.activate_mode(4),
                         _ => self.modal = Some(Modal::Modes { index }),
                     },
                     _ => self.modal = Some(Modal::Modes { index }),
@@ -1475,7 +1486,7 @@ impl App {
                 self.options.theme = Theme::Mono;
                 self.modal = Some(Modal::Modes { index: 3 });
             }
-            4 => {}
+            4 => self.modal = None, // Quit closes the Mode menu
             _ => {}
         }
     }
@@ -1520,5 +1531,36 @@ mod tests {
         assert_eq!(pane.top, 96);
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn scroll_lock_accepts_keyboard_aliases() {
+        let plain = KeyEvent::new;
+        assert!(is_scroll_lock_toggle(&plain(
+            KeyCode::ScrollLock,
+            KeyModifiers::empty()
+        )));
+        assert!(is_scroll_lock_toggle(&plain(
+            KeyCode::F(7),
+            KeyModifiers::empty()
+        )));
+        // Some Windows terminals deliver Ctrl+L as a bare form feed.
+        assert!(is_scroll_lock_toggle(&plain(
+            KeyCode::Char('\u{c}'),
+            KeyModifiers::empty()
+        )));
+        assert!(is_scroll_lock_toggle(&plain(
+            KeyCode::Char('l'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(is_scroll_lock_toggle(&plain(
+            KeyCode::Char('B'),
+            KeyModifiers::CONTROL
+        )));
+        // A plain `l` must still reach the normal character commands.
+        assert!(!is_scroll_lock_toggle(&plain(
+            KeyCode::Char('l'),
+            KeyModifiers::empty()
+        )));
     }
 }

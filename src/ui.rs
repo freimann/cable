@@ -379,11 +379,34 @@ fn draw_adaptive(frame: &mut Frame, app: &mut App, area: Rect) {
     draw_footer(frame, app, footer);
 }
 
+/// Field widths of the `Hex`/`Dec` values.  They are derived from the largest
+/// offset in either pane rather than from the current cursor, so the values
+/// keep the same width while browsing and the preview never slides sideways as
+/// the decimal count grows.
+fn adaptive_offset_widths(app: &App) -> (usize, usize) {
+    let max = app.panes.iter().map(|pane| pane.len()).max().unwrap_or(0);
+    let hex = format!("{max:X}").len().max(8);
+    let dec = max.to_string().len().max(1);
+    (hex, dec)
+}
+
+/// Horizontal middle of the hex columns of one adaptive data line.  Each byte
+/// is two columns wide, sixteen-byte groups are separated by one column, and
+/// the offset field is `data_col` wide, so `n` groups occupy `33n - 1` columns.
+/// With four groups the middle falls between the second and third group.
+fn adaptive_hex_center(bytes_per_row: usize, data_col: usize) -> usize {
+    let groups = (bytes_per_row / 16).max(1);
+    data_col + (33 * groups - 1) / 2
+}
+
 /// The two-line adaptive position band: cursor offset in both notations and
 /// the original 64-byte preview.  The original uses box-drawing crosshairs to
 /// connect these lines to the cursor byte, but the adaptive layout has no fixed
-/// byte columns to point at, so the preview character at the cursor position is
-/// shown in the same reverse-video style as the cursor byte in the data rows.
+/// byte columns to point at.  Instead the preview is placed so that its cursor
+/// character (the seventeenth, since the preview starts sixteen bytes early)
+/// sits in the horizontal middle of the hex display, and both the offset fields
+/// and the preview start are fixed widths so the line does not shift while the
+/// file is browsed.
 fn draw_adaptive_middle(frame: &mut Frame, app: &mut App, rect: Rect) {
     if rect.width == 0 || rect.height == 0 {
         return;
@@ -394,6 +417,11 @@ fn draw_adaptive_middle(frame: &mut Frame, app: &mut App, rect: Rect) {
         .fg(theme.cursor_fg())
         .bg(theme.cursor_bg())
         .add_modifier(Modifier::BOLD);
+
+    let (hex_width, dec_width) = adaptive_offset_widths(app);
+    let data_col = hex_width + 1;
+    let center = adaptive_hex_center(app.bytes_per_row, data_col);
+    let preview_col = center.saturating_sub(PREVIEW_BEFORE);
 
     for index in 0..2usize {
         if index as u16 >= rect.height {
@@ -407,13 +435,21 @@ fn draw_adaptive_middle(frame: &mut Frame, app: &mut App, rect: Rect) {
         }
 
         let cursor = app.panes[index].cursor;
-        let head = format!("Hex {:08X}  Dec {}", cursor, cursor);
-        let used = head.chars().count();
+        let head = format!(
+            "Hex {:0hw$X}  Dec {:>dw$}",
+            cursor,
+            cursor,
+            hw = hex_width,
+            dw = dec_width
+        );
+        let head_len = head.chars().count();
+        // Keep two spaces after the values, and otherwise start the preview at
+        // the column that centres its cursor character in the hex display.
+        let start = preview_col.max(head_len + 2);
         let mut spans = vec![Span::styled(head, style)];
-        // Show the preview only when the cursor character itself fits.
-        if (rect.width as usize) > used + 2 + PREVIEW_BEFORE {
-            spans.push(Span::styled("  ", style));
-            let room = rect.width as usize - used - 2;
+        if start < rect.width as usize {
+            spans.push(Span::styled(" ".repeat(start - head_len), style));
+            let room = rect.width as usize - start;
             let preview = preview_text(app, index);
             for (i, ch) in preview.chars().take(room.min(PREVIEW_LEN)).enumerate() {
                 let cell = if i == PREVIEW_BEFORE {
@@ -686,11 +722,12 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(theme.accent()).bg(theme.bg())
     };
     // The original 80x25 screen has no room for extra hints, but the adaptive
-    // footer does, and Scroll Lock is absent from most Mac keyboards.
+    // footer does, and Scroll Lock is absent from most Mac keyboards (and is
+    // not mapped by crossterm on Windows).  F7 is the most reliable alias.
     let status = if app.message.is_some() {
         app.status_line()
     } else {
-        format!("{}  (Ctrl+L toggles)", app.status_line())
+        format!("{}  (F7 / Ctrl+L toggles)", app.status_line())
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(status, status_style))),
@@ -868,7 +905,7 @@ fn draw_modal(
                 .border_style(Style::default().fg(theme.border()));
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
-            let labels = ["Attributes", "Color", "Mono", "Help", "Quit"];
+            let labels = ["Attributes", "Color", "Help", "Mono", "Quit"];
             let lines: Vec<Line> = labels
                 .iter()
                 .enumerate()
@@ -1115,5 +1152,22 @@ mod tests {
         assert_eq!(adaptive_bytes_per_row(80), 16);
         assert_eq!(adaptive_bytes_per_row(120), 32);
         assert_eq!(adaptive_bytes_per_row(160), 48);
+    }
+
+    #[test]
+    fn preview_cursor_sits_between_the_middle_hex_groups() {
+        // 240 columns: four groups; the middle falls between groups two and
+        // three, i.e. after the second 32-column group.
+        let bpr = adaptive_bytes_per_row(240);
+        assert_eq!(bpr, 64);
+        assert_eq!(adaptive_hex_center(bpr, 9), 74);
+        // 132 columns: two groups; the middle is the gap between them.
+        let bpr = adaptive_bytes_per_row(132);
+        assert_eq!(bpr, 32);
+        assert_eq!(adaptive_hex_center(bpr, 9), 41);
+        // 160 columns: three groups; the middle is the centre of the second.
+        let bpr = adaptive_bytes_per_row(160);
+        assert_eq!(bpr, 48);
+        assert_eq!(adaptive_hex_center(bpr, 9), 58);
     }
 }

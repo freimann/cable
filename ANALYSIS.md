@@ -707,8 +707,8 @@ The main string block occupies roughly `CS:0x0700`–`CS:0x1520`
 | Menu highlight + Enter | Implemented | Space/F9/F10 + Enter |
 | Highlighted-command description | Implemented | row 23 from `CS:0x0D18`; Help's entry is the hint |
 | Colour/attribute editing | Partial | theme presets, not cell attributes |
-| `SL:Active/Both` status | Implemented | Scroll Lock, `F7` or `Ctrl+L`; `--both`/`--active` |
-| Middle position band | Implemented | cursor offsets in `Hex`/`Dec` boxes; adaptive band highlights the preview byte |
+| `SL:Active/Both` status | Implemented | Scroll Lock, `F7`, `Ctrl+L` or `Ctrl+B`; `--both`/`--active` |
+| Middle position band | Implemented | cursor offsets in `Hex`/`Dec` boxes; adaptive band centres the preview byte in the hex columns |
 | Bold command accelerators | Implemented | first letter of each `CABLE:` command |
 | 64-byte previews | Implemented | 64 bytes from `cursor−16` |
 | Pinned cursor + static crosshair | Implemented | anchor at row 4 / slot 5; 69 bytes ahead |
