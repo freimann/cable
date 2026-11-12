@@ -29,6 +29,10 @@ const THEMES: [Theme; 5] = [
     Theme::Mono,
 ];
 const PANE_GAP: f32 = 10.0;
+/// The original shows a 64-byte preview of each file in the band between the
+/// two windows, starting sixteen bytes before that window's cursor.
+const PREVIEW_LEN: usize = 64;
+const PREVIEW_BEFORE: usize = 16;
 
 /// Cell geometry shared by rendering and hit testing.
 #[derive(Clone, Copy)]
@@ -371,7 +375,8 @@ impl GuiApp {
     // Keyboard
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        if self.dialog.is_some() {
+        // Dialogs and open menus own the keyboard while they are up.
+        if self.dialog.is_some() || ctx.any_popup_open() {
             return;
         }
         let events = ctx.input(|i| i.events.clone());
@@ -412,8 +417,11 @@ impl GuiApp {
 
             // While editing, every key belongs to the byte editor.
             if self.core.edit.is_some() {
-                if let Some(key) = map_key(key, modifiers) {
-                    let _ = self.core.handle_key(key);
+                if let Some(mapped) = map_key(key, modifiers) {
+                    // Keep egui widgets from also acting on navigation keys.
+                    consume(ctx, modifiers, key);
+                    release_focus(ctx);
+                    let _ = self.core.handle_key(mapped);
                 }
                 continue;
             }
@@ -441,9 +449,17 @@ impl GuiApp {
                 | Key::PageDown
                 | Key::Home
                 | Key::End => {
-                    if let Some(key) = map_key(key, modifiers) {
-                        let _ = self.core.handle_key(key);
+                    if let Some(mapped) = map_key(key, modifiers) {
+                        // Tab would otherwise move keyboard focus to the menu or
+                        // toolbar, and the arrows would then change that widget.
+                        consume(ctx, modifiers, key);
+                        release_focus(ctx);
+                        let _ = self.core.handle_key(mapped);
                     }
+                }
+                Key::Enter | Key::Space => {
+                    consume(ctx, modifiers, key);
+                    release_focus(ctx);
                 }
                 Key::A => {
                     consume(ctx, modifiers, key);
@@ -720,7 +736,10 @@ impl GuiApp {
             .fonts_mut(|f| (f.glyph_width(&font, '0'), f.row_height(&font)));
 
         let header_h = row_h + 12.0;
-        let pane_h = (avail.height() - PANE_GAP) / 2.0;
+        // Two preview lines with a little padding, matching the six-row band of
+        // the original screen in spirit while keeping modern proportions.
+        let band_h = 2.0 * row_h + 14.0;
+        let pane_h = (avail.height() - band_h - 2.0 * PANE_GAP) / 2.0;
         let rows = (((pane_h - header_h - 2.0 * PANE_PAD) / row_h).floor() as usize).max(1);
         let bpr = self.bytes_per_row(avail.width(), char_w);
 
@@ -733,14 +752,106 @@ impl GuiApp {
             row_h,
             header_h,
         };
-        for index in 0..2 {
-            let y = avail.min.y + index as f32 * (pane_h + PANE_GAP);
-            let rect = Rect::from_min_size(pos2(avail.min.x, y), vec2(avail.width(), pane_h));
-            action = action.or(self.pane(ui, index, rect, grid, &font));
-        }
+        let top = Rect::from_min_size(avail.min, vec2(avail.width(), pane_h));
+        let band_y = avail.min.y + pane_h + PANE_GAP;
+        let band = Rect::from_min_size(pos2(avail.min.x, band_y), vec2(avail.width(), band_h));
+        let bottom = Rect::from_min_size(
+            pos2(avail.min.x, band_y + band_h + PANE_GAP),
+            vec2(avail.width(), pane_h),
+        );
+        action = action.or(self.pane(ui, 0, top, grid, &font));
+        self.preview_band(ui, band, grid, &font);
+        action = action.or(self.pane(ui, 1, bottom, grid, &font));
 
         ui.allocate_space(avail.size());
         action
+    }
+
+    /// Draw the preview band between the two windows: one line per file, each
+    /// showing bytes `cursor-16 ..= cursor+47` as characters.  The cursor byte
+    /// is the seventeenth cell on both lines, so the two files line up.
+    fn preview_band(&mut self, ui: &mut egui::Ui, rect: Rect, grid: Grid, font: &FontId) {
+        let theme = self.theme();
+        let painter = ui.painter().with_clip_rect(rect);
+        painter.rect_filled(rect, 4.0, tui_color(theme.bg()));
+        painter.rect_stroke(
+            rect,
+            4.0,
+            Stroke::new(1.0, tui_color(theme.border())),
+            StrokeKind::Inside,
+        );
+
+        let label_chars = 28.0;
+        let preview_x = rect.left() + PANE_PAD + (label_chars + 1.0) * grid.char_w;
+        for index in 0..2 {
+            let y = rect.top() + 6.0 + index as f32 * grid.row_h;
+            let active = self.core.active == index;
+            let cursor = self.core.panes[index].cursor;
+            let label_color = if active {
+                tui_color(theme.accent())
+            } else {
+                tui_color(theme.dim())
+            };
+            painter.text(
+                pos2(rect.left() + PANE_PAD, y),
+                Align2::LEFT_TOP,
+                format!("Hex {cursor:08X}  Dec {cursor:>10}"),
+                font.clone(),
+                label_color,
+            );
+
+            let cells = self.preview_cells(index);
+            for (i, ch) in cells.iter().enumerate() {
+                let x = preview_x + i as f32 * grid.char_w;
+                if x + grid.char_w > rect.right() - PANE_PAD {
+                    break;
+                }
+                let at_cursor = i == PREVIEW_BEFORE;
+                let (fg, bg) = if at_cursor {
+                    (
+                        tui_color(theme.cursor_fg()),
+                        Some(tui_color(theme.cursor_bg())),
+                    )
+                } else if active {
+                    (tui_color(theme.fg()), None)
+                } else {
+                    (tui_color(theme.dim()), None)
+                };
+                if let Some(bg) = bg {
+                    painter.rect_filled(
+                        Rect::from_min_size(pos2(x, y), vec2(grid.char_w, grid.row_h)),
+                        0.0,
+                        bg,
+                    );
+                }
+                painter.text(pos2(x, y), Align2::LEFT_TOP, *ch, font.clone(), fg);
+            }
+        }
+    }
+
+    /// The 64 characters of one file's preview line; blanks outside the file.
+    fn preview_cells(&mut self, index: usize) -> Vec<char> {
+        let cursor = self.core.panes[index].cursor;
+        let start = cursor as i64 - PREVIEW_BEFORE as i64;
+        let ebcdic = self.core.options.ebcdic;
+        let conceal = self.core.options.conceal;
+        let mut cells = Vec::with_capacity(PREVIEW_LEN);
+        for i in 0..PREVIEW_LEN {
+            let offset = start + i as i64;
+            let byte = if offset < 0 {
+                None
+            } else {
+                self.core.panes[index]
+                    .file
+                    .as_mut()
+                    .and_then(|file| file.read_byte(offset as u64).ok().flatten())
+            };
+            cells.push(match byte {
+                Some(byte) => codec::display_byte(byte, ebcdic, conceal),
+                None => ' ',
+            });
+        }
+        cells
     }
 
     fn bytes_per_row(&self, width: f32, char_w: f32) -> usize {
@@ -1446,6 +1557,18 @@ fn consume(ctx: &egui::Context, modifiers: egui::Modifiers, key: Key) {
     ctx.input_mut(|i| i.consume_key(modifiers, key));
 }
 
+/// Drop keyboard focus and the focus move egui derived from this frame's raw
+/// key events.  Without this, Tab focuses the first menu or toolbar widget and
+/// the arrow keys then change it instead of moving the file cursor.
+fn release_focus(ctx: &egui::Context) {
+    ctx.memory_mut(|memory| {
+        memory.move_focus(egui::FocusDirection::None);
+        if let Some(id) = memory.focused() {
+            memory.surrender_focus(id);
+        }
+    });
+}
+
 fn tui_color(color: TuiColor) -> Color32 {
     match color {
         TuiColor::Reset => Color32::from_rgb(220, 220, 220),
@@ -1692,6 +1815,93 @@ mod tests {
         }
         assert!(app.core.panes[0].file.is_some());
         assert!(app.core.panes[1].file.is_some());
+    }
+
+    fn key_event(key: Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        }
+    }
+
+    fn run_frame(app: &mut GuiApp, ctx: &egui::Context, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| app.draw(ui));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn tab_and_arrows_do_not_reach_the_chrome() {
+        let (mut app, ctx) = sample_app();
+        let theme = app.core.options.theme;
+
+        run_frame(&mut app, &ctx, vec![key_event(Key::Tab)]);
+        assert_eq!(app.core.active, 1, "Tab should switch to the second window");
+        assert!(
+            ctx.memory(|m| m.focused().is_none()),
+            "Tab left keyboard focus on a menu or toolbar widget"
+        );
+
+        let before = app.core.panes[1].cursor;
+        run_frame(&mut app, &ctx, vec![key_event(Key::ArrowDown)]);
+        assert!(
+            app.core.panes[1].cursor > before,
+            "the arrow key should move the second window's cursor"
+        );
+        assert_eq!(
+            app.core.options.theme, theme,
+            "the arrow key must not change a toolbar selection"
+        );
+    }
+
+    #[test]
+    fn preview_centres_the_cursor_byte() {
+        let (mut app, _ctx) = sample_app();
+        app.core.panes[0].cursor = 40;
+        let conceal = app.core.options.conceal;
+        let cells = app.preview_cells(0);
+        assert_eq!(cells.len(), PREVIEW_LEN);
+        assert_eq!(cells[0], codec::display_byte(24, false, conceal));
+        assert_eq!(
+            cells[PREVIEW_BEFORE],
+            codec::display_byte(40, false, conceal)
+        );
+        assert_eq!(
+            cells[PREVIEW_LEN - 1],
+            codec::display_byte(87, false, conceal)
+        );
+    }
+
+    #[test]
+    fn preview_pads_before_the_start_of_the_file() {
+        let (mut app, _ctx) = sample_app();
+        let conceal = app.core.options.conceal;
+        let cells = app.preview_cells(0);
+        assert!(cells[..PREVIEW_BEFORE].iter().all(|c| *c == ' '));
+        assert_eq!(
+            cells[PREVIEW_BEFORE],
+            codec::display_byte(0, false, conceal)
+        );
+    }
+
+    #[test]
+    fn preview_ends_with_blanks_past_the_file() {
+        let (mut app, _ctx) = sample_app();
+        let conceal = app.core.options.conceal;
+        let last = app.core.panes[0].len() - 1;
+        app.core.panes[0].cursor = last;
+        let cells = app.preview_cells(0);
+        assert_eq!(
+            cells[PREVIEW_BEFORE],
+            codec::display_byte(255, false, conceal)
+        );
+        assert_eq!(cells[PREVIEW_BEFORE + 1], ' ');
     }
 
     #[test]

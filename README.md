@@ -45,6 +45,8 @@ disassembly, and adds:
 
 - a menu bar, toolbar and status bar; the original colour, amber and mono
   palettes plus modern dark and light ones (`--dark`, `--light`)
+- the original's middle preview band: 64 bytes around each window's cursor,
+  with the two files aligned on the cursor byte
 - mouse and trackpad navigation of the hex and character columns, drag and drop
   of files onto either window, and native open dialogs
 - search, go-to/add/subtract, options and help dialogs, and direct saving
