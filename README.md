@@ -30,6 +30,37 @@ cargo fmt
 cargo clippy    # optional
 ```
 
+### Desktop application
+
+The same core drives an optional native-window front end built on egui/eframe:
+
+```sh
+cargo run --release --features gui --bin cable-gui -- [OPTIONS] [FILE1 [FILE2]]
+```
+
+![CABLE desktop window](docs/cable-gui.png)
+
+It keeps the terminal version's two-window workflow, paged I/O, compare and
+disassembly, and adds:
+
+- a menu bar, toolbar and status bar; the original colour, amber and mono
+  palettes plus modern dark and light ones (`--dark`, `--light`)
+- mouse and trackpad navigation of the hex and character columns, drag and drop
+  of files onto either window, and native open dialogs
+- search, go-to/add/subtract, options and help dialogs, and direct saving
+  (`Cmd`/`Ctrl`+`S`)
+- `Cmd`/`Ctrl`+`+`/`-` to scale the hex grid
+
+The terminal front end remains the default binary; the GUI is behind the `gui`
+feature so a plain `cargo build` still needs no windowing libraries. For
+documentation or CI, set `CABLE_SCREENSHOT=shot.ppm` to have the window capture
+itself and exit.
+
+Keyboard: `F1` help, `F2` case, `F3` direction, `F4` input mode, `F5`
+unprintables, `F6` character set, `F8` side view, `Tab` switch window, arrows
+and page keys move the cursor, `C` compare, `N` repeat, `E` edit, `S` search,
+`G` go to, `O` options, `Q` quit.
+
 ### Release binaries
 
 `dist/` contains the cross-compiled release builds:

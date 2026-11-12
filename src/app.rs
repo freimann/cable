@@ -49,7 +49,21 @@ pub enum Theme {
     Classic,
     Amber,
     Mono,
+    /// Restrained dark palette for the desktop front end.
+    ModernDark,
+    /// Restrained light palette for the desktop front end.
+    ModernLight,
 }
+
+/// Palettes offered by the terminal's Attributes command and the desktop
+/// theme menu, in display order.
+pub const THEMES: [Theme; 5] = [
+    Theme::Classic,
+    Theme::Amber,
+    Theme::Mono,
+    Theme::ModernDark,
+    Theme::ModernLight,
+];
 
 impl Theme {
     pub fn name(self) -> &'static str {
@@ -57,6 +71,8 @@ impl Theme {
             Theme::Classic => "Colour (blue/yellow)",
             Theme::Amber => "Amber",
             Theme::Mono => "Mono",
+            Theme::ModernDark => "Modern dark",
+            Theme::ModernLight => "Modern light",
         }
     }
 
@@ -64,6 +80,8 @@ impl Theme {
         match self {
             Theme::Classic => Color::Blue,
             Theme::Amber | Theme::Mono => Color::Black,
+            Theme::ModernDark => Color::Rgb(24, 26, 32),
+            Theme::ModernLight => Color::Rgb(251, 251, 253),
         }
     }
 
@@ -72,6 +90,8 @@ impl Theme {
             Theme::Classic => Color::LightYellow,
             Theme::Amber => Color::Rgb(255, 191, 0),
             Theme::Mono => Color::White,
+            Theme::ModernDark => Color::Rgb(216, 218, 226),
+            Theme::ModernLight => Color::Rgb(31, 35, 48),
         }
     }
 
@@ -80,6 +100,8 @@ impl Theme {
             Theme::Classic => Color::Gray,
             Theme::Amber => Color::Rgb(150, 100, 0),
             Theme::Mono => Color::DarkGray,
+            Theme::ModernDark => Color::Rgb(123, 127, 140),
+            Theme::ModernLight => Color::Rgb(107, 112, 128),
         }
     }
 
@@ -90,6 +112,8 @@ impl Theme {
             Theme::Classic => Color::Gray,
             Theme::Amber => Color::Rgb(150, 100, 0),
             Theme::Mono => Color::DarkGray,
+            Theme::ModernDark => Color::Rgb(42, 44, 54),
+            Theme::ModernLight => Color::Rgb(230, 233, 240),
         }
     }
 
@@ -98,6 +122,8 @@ impl Theme {
         match self {
             Theme::Classic => Color::DarkGray,
             Theme::Amber | Theme::Mono => Color::Black,
+            Theme::ModernDark => Color::Rgb(238, 240, 246),
+            Theme::ModernLight => Color::Rgb(31, 35, 48),
         }
     }
 
@@ -106,6 +132,8 @@ impl Theme {
             Theme::Classic => Color::Cyan,
             Theme::Amber => Color::Rgb(255, 220, 120),
             Theme::Mono => Color::White,
+            Theme::ModernDark => Color::Rgb(122, 178, 255),
+            Theme::ModernLight => Color::Rgb(21, 101, 192),
         }
     }
 
@@ -114,6 +142,8 @@ impl Theme {
             Theme::Classic => Color::White,
             Theme::Amber => Color::Rgb(255, 220, 120),
             Theme::Mono => Color::White,
+            Theme::ModernDark => Color::Rgb(238, 240, 246),
+            Theme::ModernLight => Color::Rgb(31, 35, 48),
         }
     }
 
@@ -121,6 +151,8 @@ impl Theme {
         match self {
             Theme::Classic => Color::Blue,
             Theme::Amber | Theme::Mono => Color::Black,
+            Theme::ModernDark => Color::Rgb(24, 26, 32),
+            Theme::ModernLight => Color::Rgb(251, 251, 253),
         }
     }
 
@@ -129,6 +161,8 @@ impl Theme {
             Theme::Classic => Color::White,
             Theme::Amber => Color::Rgb(255, 191, 0),
             Theme::Mono => Color::White,
+            Theme::ModernDark => Color::Rgb(122, 178, 255),
+            Theme::ModernLight => Color::Rgb(21, 101, 192),
         }
     }
 
@@ -136,6 +170,8 @@ impl Theme {
         match self {
             Theme::Classic => Color::White,
             Theme::Amber | Theme::Mono => Color::Black,
+            Theme::ModernDark => Color::Rgb(255, 226, 170),
+            Theme::ModernLight => Color::Rgb(122, 75, 0),
         }
     }
 
@@ -144,6 +180,8 @@ impl Theme {
             Theme::Classic => Color::Red,
             Theme::Amber => Color::Rgb(255, 191, 0),
             Theme::Mono => Color::White,
+            Theme::ModernDark => Color::Rgb(86, 52, 24),
+            Theme::ModernLight => Color::Rgb(255, 233, 179),
         }
     }
 
@@ -152,6 +190,8 @@ impl Theme {
             Theme::Classic => Color::Cyan,
             Theme::Amber => Color::Rgb(255, 191, 0),
             Theme::Mono => Color::White,
+            Theme::ModernDark => Color::Rgb(58, 61, 72),
+            Theme::ModernLight => Color::Rgb(200, 204, 214),
         }
     }
 }
@@ -429,6 +469,55 @@ impl App {
         self.panes.iter().any(Pane::dirty)
     }
 
+    /// Save the active pane immediately, reporting the result in the message
+    /// line.  The GUI uses this instead of the terminal's confirmation modal.
+    pub fn save_direct(&mut self) {
+        let Some(file) = self.panes[self.active].file.as_ref() else {
+            self.set_message("No file to edit");
+            return;
+        };
+        if !file.is_dirty() {
+            self.set_message("No changes to write");
+            return;
+        }
+        if file.is_read_only() {
+            self.set_message("File is read-only - can't write");
+            return;
+        }
+        self.do_write();
+    }
+
+    /// Open a file in `pane` without asking about unsaved changes.  Front ends
+    /// that can prompt for confirmation (the GUI) do so before calling this.
+    pub fn open_in(&mut self, pane: usize, path: impl Into<PathBuf>) {
+        self.load_into_force(path.into(), pane);
+        self.active = pane;
+    }
+
+    /// Move the cursor of `pane` to `offset` (clamped to the file) and make it
+    /// the active window.  Used by mouse clicks in the GUI.
+    pub fn set_cursor(&mut self, pane: usize, offset: u64) {
+        if pane >= self.panes.len() || self.panes[pane].file.is_none() {
+            return;
+        }
+        self.active = pane;
+        let rows = self.rows_per_pane;
+        let bpr = self.bytes_per_row;
+        let p = &mut self.panes[pane];
+        p.cursor = offset.min(p.len().saturating_sub(1));
+        p.ensure_visible(rows, bpr);
+    }
+
+    /// Submit a search string from a GUI search field.
+    pub fn search_value(&mut self, value: &str) -> Result<()> {
+        self.submit_input(InputAction::Search, value.to_string())
+    }
+
+    /// Submit a position change from a GUI offset field.
+    pub fn offset_value(&mut self, action: InputAction, value: &str) -> Result<()> {
+        self.submit_input(action, value.to_string())
+    }
+
     pub fn set_message(&mut self, text: impl Into<String>) {
         self.message = Some(text.into());
     }
@@ -620,7 +709,7 @@ impl App {
         self.panes[self.active].ensure_visible(self.rows_per_pane, self.bytes_per_row);
     }
 
-    fn move_cursor(&mut self, delta: i64) {
+    pub fn move_cursor(&mut self, delta: i64) {
         let allow_append = self.edit.is_some();
         let rows = self.rows_per_pane;
         let bpr = self.bytes_per_row;
@@ -799,7 +888,7 @@ impl App {
         );
     }
 
-    fn start_edit(&mut self) {
+    pub fn start_edit(&mut self) {
         if self.panes[self.active].file.is_none() {
             self.set_message("No file to edit");
             return;
@@ -923,7 +1012,7 @@ impl App {
         }
     }
 
-    fn start_compare(&mut self) {
+    pub fn start_compare(&mut self) {
         if self.panes[0].file.is_none() || self.panes[1].file.is_none() {
             self.set_message("No file to compare");
             return;
@@ -991,7 +1080,7 @@ impl App {
         }
     }
 
-    fn repeat_last(&mut self) {
+    pub fn repeat_last(&mut self) {
         match self.last_action.clone() {
             Some(LastAction::Search(needle)) => self.perform_search(&needle, true),
             Some(LastAction::Compare) => self.do_compare(true),
@@ -1305,7 +1394,7 @@ impl App {
                 }
             }
             Modal::Attributes { mut index } => {
-                const N: usize = 3;
+                const N: usize = THEMES.len();
                 match key.code {
                     KeyCode::Esc => {}
                     KeyCode::Up => {
@@ -1317,11 +1406,7 @@ impl App {
                         self.modal = Some(Modal::Attributes { index });
                     }
                     KeyCode::Enter | KeyCode::Char(' ') => {
-                        self.options.theme = match index {
-                            0 => Theme::Classic,
-                            1 => Theme::Amber,
-                            _ => Theme::Mono,
-                        };
+                        self.options.theme = THEMES[index.min(N - 1)];
                     }
                     _ => self.modal = Some(Modal::Attributes { index }),
                 }
