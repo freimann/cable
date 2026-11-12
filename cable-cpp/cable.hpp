@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -265,6 +266,7 @@ private:
     Key decodeByte(unsigned char b);
     std::optional<Key> readCSI();
     std::optional<Key> readSS3();
+    std::deque<Key> pending_;
 };
 
 // ---------------------------------------------------------------------------
@@ -285,6 +287,10 @@ private:
 };
 
 bool terminalSize(int& width, int& height);
+
+// Writes terminal output.  On Windows this routes through the ANSI-to-console
+// translator when the console lacks virtual-terminal support (Windows 7/8).
+void writeTerminal(const std::string& text);
 
 // ---------------------------------------------------------------------------
 // Application

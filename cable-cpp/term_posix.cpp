@@ -4,6 +4,7 @@
 
 #include "cable.hpp"
 
+#include <cerrno>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
@@ -34,7 +35,7 @@ std::unique_ptr<Terminal> Terminal::start(std::string& error) {
     terminal->active_ = true;
     g_active = true;
     std::string out = "\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[2J";
-    (void)!::write(1, out.data(), out.size());
+    writeTerminal(out);
     return terminal;
 }
 
@@ -44,7 +45,7 @@ void Terminal::close() {
     }
     active_ = false;
     std::string out = "\x1b[?7h\x1b[?25h\x1b[?1049l";
-    (void)!::write(1, out.data(), out.size());
+    writeTerminal(out);
     if (g_active) {
         ::tcsetattr(0, TCSANOW, &g_old);
         g_active = false;
@@ -52,6 +53,22 @@ void Terminal::close() {
 }
 
 Terminal::~Terminal() { close(); }
+
+void writeTerminal(const std::string& text) {
+    const char* data = text.data();
+    std::size_t left = text.size();
+    while (left > 0) {
+        ssize_t n = ::write(1, data, left);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        data += n;
+        left -= static_cast<std::size_t>(n);
+    }
+}
 
 bool terminalSize(int& width, int& height) {
     struct winsize ws {};

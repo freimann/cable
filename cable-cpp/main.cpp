@@ -170,8 +170,7 @@ int main(int argc, char** argv) {
             drawUI(screen, *app);
             std::string out;
             screen.flush(out);
-            std::fwrite(out.data(), 1, out.size(), stdout);
-            std::fflush(stdout);
+            writeTerminal(out);
             lastW = w;
             lastH = h;
             dirty = false;

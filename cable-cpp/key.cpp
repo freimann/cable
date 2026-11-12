@@ -6,6 +6,116 @@
 
 #ifdef _WIN32
 #include <windows.h>
+
+namespace {
+
+std::optional<Key> translateConsoleKey(const KEY_EVENT_RECORD& event) {
+    if (!event.bKeyDown) {
+        return std::nullopt;
+    }
+    Key key;
+    key.ctrl = (event.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+    key.alt = (event.dwControlKeyState & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0;
+    key.shift = (event.dwControlKeyState & SHIFT_PRESSED) != 0;
+
+    switch (event.wVirtualKeyCode) {
+    case VK_UP:
+        key.code = KeyCode::Up;
+        return key;
+    case VK_DOWN:
+        key.code = KeyCode::Down;
+        return key;
+    case VK_LEFT:
+        key.code = KeyCode::Left;
+        return key;
+    case VK_RIGHT:
+        key.code = KeyCode::Right;
+        return key;
+    case VK_HOME:
+        key.code = KeyCode::Home;
+        return key;
+    case VK_END:
+        key.code = KeyCode::End;
+        return key;
+    case VK_PRIOR:
+        key.code = KeyCode::PageUp;
+        return key;
+    case VK_NEXT:
+        key.code = KeyCode::PageDown;
+        return key;
+    case VK_INSERT:
+        key.code = KeyCode::Insert;
+        return key;
+    case VK_DELETE:
+        key.code = KeyCode::Delete;
+        return key;
+    case VK_TAB:
+        key.code = key.shift ? KeyCode::BackTab : KeyCode::Tab;
+        return key;
+    case VK_RETURN:
+        key.code = KeyCode::Enter;
+        return key;
+    case VK_BACK:
+        key.code = KeyCode::Backspace;
+        return key;
+    case VK_ESCAPE:
+        key.code = KeyCode::Esc;
+        return key;
+    case VK_SCROLL:
+        key.code = KeyCode::ScrollLock;
+        return key;
+    case VK_F1:
+    case VK_F2:
+    case VK_F3:
+    case VK_F4:
+    case VK_F5:
+    case VK_F6:
+    case VK_F7:
+    case VK_F8:
+    case VK_F9:
+    case VK_F10:
+    case VK_F11:
+    case VK_F12:
+        key.code = static_cast<KeyCode>(
+            static_cast<int>(KeyCode::F1) + (event.wVirtualKeyCode - VK_F1));
+        return key;
+    default:
+        break;
+    }
+
+    wchar_t ch = event.uChar.UnicodeChar;
+    if (ch == 0) {
+        return std::nullopt;
+    }
+    if (ch == L'\t') {
+        key.code = key.shift ? KeyCode::BackTab : KeyCode::Tab;
+        return key;
+    }
+    if (ch == L'\r' || ch == L'\n') {
+        key.code = KeyCode::Enter;
+        return key;
+    }
+    if (ch == L'\b') {
+        key.code = KeyCode::Backspace;
+        return key;
+    }
+    if (ch == 27) {
+        key.code = KeyCode::Esc;
+        return key;
+    }
+    if (ch < 32) {
+        // Ctrl+letter arrives as a control character.
+        key.code = KeyCode::Rune;
+        key.rune = static_cast<char32_t>(U'a' + ch - 1);
+        key.ctrl = true;
+        return key;
+    }
+    key.code = KeyCode::Rune;
+    key.rune = static_cast<char32_t>(ch);
+    return key;
+}
+
+} // namespace
 #else
 #include <poll.h>
 #include <unistd.h>
@@ -291,9 +401,55 @@ std::optional<Key> KeyReader::readKey() {
 }
 
 std::optional<Key> KeyReader::poll(int timeoutMs) {
+#ifdef _WIN32
+    if (!pending_.empty()) {
+        Key key = pending_.front();
+        pending_.pop_front();
+        return key;
+    }
+    HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+    }
+    DWORD start = GetTickCount();
+    for (;;) {
+        DWORD waitMs = INFINITE;
+        if (timeoutMs > 0) {
+            DWORD elapsed = GetTickCount() - start;
+            if (elapsed >= static_cast<DWORD>(timeoutMs)) {
+                return std::nullopt;
+            }
+            waitMs = static_cast<DWORD>(timeoutMs) - elapsed;
+        } else if (timeoutMs == 0) {
+            waitMs = 0;
+        }
+        DWORD wait = WaitForSingleObject(handle, waitMs);
+        if (wait != WAIT_OBJECT_0) {
+            return std::nullopt;
+        }
+        INPUT_RECORD record;
+        DWORD got = 0;
+        if (!ReadConsoleInputW(handle, &record, 1, &got) || got == 0) {
+            return std::nullopt;
+        }
+        if (record.EventType != KEY_EVENT) {
+            continue;
+        }
+        std::optional<Key> key = translateConsoleKey(record.Event.KeyEvent);
+        if (!key) {
+            continue;
+        }
+        WORD repeats = record.Event.KeyEvent.wRepeatCount;
+        for (WORD i = 1; i < repeats; ++i) {
+            pending_.push_back(*key);
+        }
+        return key;
+    }
+#else
     unsigned char b = 0;
     if (!readByte(timeoutMs, b)) {
         return std::nullopt;
     }
     return parseFirst(b);
+#endif
 }

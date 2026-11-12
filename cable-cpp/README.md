@@ -37,6 +37,7 @@ rebuild them after a fresh clone):
 | `cable-cpp-linux-amd64` | Linux x86-64, statically linked |
 | `cable-cpp-linux-arm64` | Linux arm64, statically linked |
 | `cable-cpp-windows-amd64.exe` | Windows 10/11 console (x86-64) |
+| `cable-cpp-windows-x86.exe` | Windows 7+ console (32-bit x86, static msvcrt) |
 
 The Darwin and Windows builds use the host clang and mingw-w64 toolchains.  The
 Linux builds were produced in an Ubuntu 22.04 container:
@@ -52,6 +53,32 @@ x86_64-w64-mingw32-g++ -std=c++20 -O3 -DNDEBUG -static \
   core.cpp ui.cpp app.cpp key.cpp term_posix.cpp term_windows.cpp \
   main.cpp bench.cpp
 ```
+
+The 32-bit build targets Windows 7 by linking against the classic `msvcrt.dll`
+instead of the Universal CRT used by current mingw-w64 toolchains:
+
+```sh
+make windows-x86        # 32-bit Windows 7+ build, static
+```
+
+`win7_compat.{h,cpp}` supplies the two C11 quick-exit functions that msvcrt
+lacks, `__LARGE_MBSTATE_T` matches the `mbstate_t` layout libstdc++ was built
+with, and `-Wl,-u,___ms_vsnprintf` pulls in the mingw printf shim before the
+msvcrt import library needs it.  The result imports only `KERNEL32.dll` and
+`msvcrt.dll` and needs no redistributable runtime.
+
+The recipe expects the Homebrew mingw-w64 i686 toolchain (GCC 16 with a
+UCRT-built libstdc++); with a libstdc++ already built for msvcrt, drop
+`-D__LARGE_MBSTATE_T`.
+
+On Windows 10 the program enables virtual-terminal processing and lets the
+console interpret ANSI escapes.  Windows 7/8 reject that console mode, so the
+terminal layer falls back to translating the escape stream itself with
+`SetConsoleCursorPosition`/`SetConsoleTextAttribute` and `WriteConsoleW`.  In
+that mode it also draws into a private screen buffer, so the previous console
+contents are restored on exit.  Keyboard input is always read with
+`ReadConsoleInputW`, which works on every supported Windows version and does
+not require virtual-terminal input.
 
 For Linux, build inside Ubuntu 22.04 so the result does not depend on the host
 toolchain:
