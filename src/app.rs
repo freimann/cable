@@ -541,6 +541,12 @@ impl App {
         if let Some(msg) = &self.message {
             return msg.clone();
         }
+        self.parameter_line()
+    }
+
+    /// The persistent summary of the current parameters, without the transient
+    /// message.  The GUI shows both at once.
+    pub fn parameter_line(&self) -> String {
         let mut s = format!(
             "{}  {}  {}  {}  {}  SL:{}",
             self.options.side_view(),
@@ -1692,6 +1698,20 @@ mod tests {
         options.cycle_side_view();
         assert!(options.disasm.is_none());
         assert_eq!(options.side_view(), "ASCII");
+    }
+
+    #[test]
+    fn a_message_hides_neither_the_parameters_nor_itself() {
+        let path = temp_file("params.bin", &[0u8; 16]);
+        let mut app = App::new(&[path.clone()], Options::default()).unwrap();
+        let parameters = app.parameter_line();
+        assert!(parameters.contains("ASCII"));
+        assert_eq!(app.status_line(), parameters);
+
+        app.message = Some("Theme: Modern light".into());
+        assert_eq!(app.status_line(), "Theme: Modern light");
+        assert_eq!(app.parameter_line(), parameters);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

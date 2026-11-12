@@ -701,21 +701,48 @@ impl GuiApp {
         let theme = self.theme();
         let accent = tui_color(theme.accent());
         let dim = tui_color(theme.dim());
+        let hint_size = self.font_size * 0.72;
+        // Reserve room for the F-key hint first, so a long parameter line or
+        // message is truncated instead of pushing the hint off the window.
+        let hint_width = ui
+            .painter()
+            .layout_no_wrap(
+                FKEY_HINT.to_owned(),
+                egui::FontId::monospace(hint_size),
+                dim,
+            )
+            .size()
+            .x;
         ui.horizontal(|ui| {
-            let status = self.core.status_line();
-            let color = if self.core.message.is_some() {
-                tui_color(theme.header_fg())
-            } else {
-                accent
-            };
-            ui.label(egui::RichText::new(status).monospace().color(color));
+            let left_width = (ui.available_width() - hint_width - 16.0).max(0.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(left_width, ui.available_height()),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(self.core.parameter_line())
+                                .monospace()
+                                .color(accent),
+                        )
+                        .truncate(),
+                    );
+                    if let Some(msg) = &self.core.message {
+                        ui.add_space(12.0);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(msg)
+                                    .monospace()
+                                    .color(tui_color(theme.header_fg())),
+                            )
+                            .truncate(),
+                        );
+                    }
+                },
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(FKEY_HINT)
-                        .size(self.font_size * 0.72)
-                        .color(dim),
-                );
+                ui.label(egui::RichText::new(FKEY_HINT).size(hint_size).color(dim));
             });
         });
     }
@@ -1794,7 +1821,11 @@ mod tests {
     }
 
     fn sample_app() -> (GuiApp, egui::Context) {
-        let dir = std::env::temp_dir().join(format!("cable-gui-{}", std::process::id()));
+        // A directory per call: tests run in parallel and would otherwise
+        // rewrite each other's files while a frame is being drawn.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cable-gui-{}-{id}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let first = dir.join("first.bin");
         let second = dir.join("second.bin");
@@ -1902,6 +1933,46 @@ mod tests {
             codec::display_byte(255, false, conceal)
         );
         assert_eq!(cells[PREVIEW_BEFORE + 1], ' ');
+    }
+
+    fn drawn_text(shapes: &[egui::epaint::ClippedShape]) -> String {
+        fn walk(shape: &egui::Shape, out: &mut String) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    out.push_str(text.galley.text());
+                    out.push('\n');
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = String::new();
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn status_bar_shows_parameters_beside_a_message() {
+        let (mut app, ctx) = sample_app();
+        app.core.message = Some("Theme: Modern light".into());
+        let mut output = ctx.run_ui(Default::default(), |ui| app.draw(ui));
+        output.textures_delta.clear();
+        let text = drawn_text(&output.shapes);
+        assert!(
+            text.contains(&app.core.parameter_line()),
+            "the parameter summary vanished: {text:?}"
+        );
+        assert!(
+            text.contains("Theme: Modern light"),
+            "the message vanished: {text:?}"
+        );
+        assert!(text.contains(FKEY_HINT), "the key hint vanished: {text:?}");
     }
 
     #[test]
