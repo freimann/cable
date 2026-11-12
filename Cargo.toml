@@ -2,11 +2,31 @@
 name = "cable-rs"
 version = "0.2.4"
 edition = "2024"
+default-run = "cable-rs"
+
+[lib]
+name = "cable_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cable-rs"
+path = "src/main.rs"
+
+[[bin]]
+name = "cable-gui"
+path = "src/bin/cable-gui.rs"
+required-features = ["gui"]
+
+[features]
+default = []
+gui = ["dep:eframe", "dep:rfd"]
 
 [dependencies]
 anyhow = "1.0.104"
 crossterm = "0.29.0"
+eframe = { version = "0.37.0", optional = true }
 ratatui = "0.30.2"
+rfd = { version = "0.18.0", optional = true }
 yaxpeax-arch = { version = "0.3.3", default-features = false, features = ["std"] }
 yaxpeax-arm = { version = "0.5.0", default-features = false, features = ["std", "fmt"] }
 yaxpeax-x86 = { version = "2.2.0", default-features = false, features = ["std", "fmt"] }

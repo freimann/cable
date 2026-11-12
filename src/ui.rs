@@ -1070,7 +1070,7 @@ fn draw_modal(
                 .border_style(Style::default().fg(theme.border()));
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
-            let labels = [Theme::Classic, Theme::Amber, Theme::Mono];
+            let labels = crate::app::THEMES;
             let mut lines: Vec<Line> = labels
                 .iter()
                 .enumerate()
