@@ -919,7 +919,7 @@ impl GuiApp {
             StrokeKind::Inside,
         );
 
-        let header = Rect::from_min_size(rect.min, vec2(rect.width(), header_h));
+        let header = pane_header_rect(rect, header_h, index);
         let header_bg = if active {
             tui_color(theme.bar_bg())
         } else {
@@ -968,7 +968,7 @@ impl GuiApp {
             header_fg,
         );
 
-        let body = Rect::from_min_max(pos2(rect.min.x, rect.min.y + header_h), rect.max);
+        let body = pane_body_rect(rect, header_h, index);
         let body_bg = painter.with_clip_rect(body);
         body_bg.rect_filled(body, 0.0, bg);
 
@@ -1749,6 +1749,27 @@ fn bytes_per_row_for(max_chars: usize) -> usize {
     best
 }
 
+/// Title strip of a window.  The first file's title sits above its bytes and
+/// the second file's below, so the two titles bracket the display exactly as
+/// they do in the terminal front end.
+fn pane_header_rect(rect: Rect, header_h: f32, index: usize) -> Rect {
+    let y = if index == 1 {
+        rect.max.y - header_h
+    } else {
+        rect.min.y
+    };
+    Rect::from_min_size(pos2(rect.min.x, y), vec2(rect.width(), header_h))
+}
+
+/// The byte grid of a window, leaving room for its title strip.
+fn pane_body_rect(rect: Rect, header_h: f32, index: usize) -> Rect {
+    if index == 1 {
+        Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - header_h))
+    } else {
+        Rect::from_min_max(pos2(rect.min.x, rect.min.y + header_h), rect.max)
+    }
+}
+
 /// Byte column under a pointer `x` inside a rendered row, or `None` when the
 /// pointer is left of the hex area.  Both the hex and character regions group
 /// bytes in sixteens separated by a single blank cell.
@@ -1777,6 +1798,24 @@ fn column_at(x: f32, origin_x: f32, char_w: f32, bpr: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lower_pane_title_sits_at_its_bottom() {
+        let rect = egui::Rect::from_min_size(pos2(0.0, 100.0), vec2(400.0, 200.0));
+        let header_h = 20.0;
+
+        let top = pane_header_rect(rect, header_h, 0);
+        assert_eq!(top.min.y, rect.min.y);
+        assert_eq!(
+            pane_body_rect(rect, header_h, 0).min.y,
+            rect.min.y + header_h
+        );
+
+        let bottom = pane_header_rect(rect, header_h, 1);
+        assert_eq!(bottom.max.y, rect.max.y);
+        assert_eq!(bottom.min.y, rect.max.y - header_h);
+        assert_eq!(pane_body_rect(rect, header_h, 1).max.y, bottom.min.y);
+    }
 
     #[test]
     fn row_widths_grow_in_sixteen_byte_steps() {
