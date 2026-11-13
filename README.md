@@ -65,44 +65,62 @@ and page keys move the cursor, `C` compare, `N` repeat, `E` edit, `S` search,
 
 ### Release binaries
 
-`dist/` contains the cross-compiled release builds:
+GitHub releases carry ready-to-run builds.  Every archive contains both the
+desktop application (`cable-gui`, or `CABLE.app` on macOS) and the terminal
+program (`cable`):
 
 | File | Platform |
 | --- | --- |
-| `cable-rs-v0.2.4-linux-x86_64` | Linux ELF, glibc 2.17 or newer |
-| `cable-rs-v0.2.4-windows-x86_64.exe` | Windows 10/11 console (x86-64) |
-| `cable-rs-v0.2.4-windows-x86.exe` | Windows 10+ console (32-bit x86) |
+| `cable-v0.2.4-macos-universal.zip` | macOS 11+ Apple Silicon, 10.12+ Intel |
+| `cable-v0.2.4-windows-x86_64.zip` | Windows 10/11, 64-bit |
+| `cable-v0.2.4-windows-x86.zip` | Windows 10/11, 32-bit, plus the C++ console build for Windows 7/8.1 |
+| `cable-v0.2.4-linux-x86_64.tar.gz` | Linux x86-64, glibc 2.17 or newer |
 
-All three were produced from macOS with rustup targets and three linkers:
+They are cross-compiled from macOS with rustup targets and the linkers below;
+[`scripts/package-release.sh`](scripts/package-release.sh) assembles the
+archives in `dist/`.
 
 ```sh
-rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-gnu
+rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-gnu \
+    x86_64-apple-darwin i686-pc-windows-gnullvm
+
+# macOS universal: one build per architecture, combined with lipo by the
+# packaging script.
+cargo build --release --features gui --target aarch64-apple-darwin
+cargo build --release --features gui --target x86_64-apple-darwin
 
 # Linux: Zig supplies the linker and a glibc 2.17 sysroot.
 printf '#!/bin/sh\nexec zig cc -target x86_64-linux-gnu.2.17 "$@"\n' > zig-linux
+chmod +x zig-linux
 CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$PWD/zig-linux" \
-    cargo build --release --target x86_64-unknown-linux-gnu
+    cargo build --release --features gui --target x86_64-unknown-linux-gnu
 
-# Windows: the mingw-w64 toolchain supplies the linker and import libraries.
-cargo build --release --target x86_64-pc-windows-gnu
+# Windows 64-bit: the mingw-w64 toolchain supplies the linker and import
+# libraries.
+cargo build --release --features gui --target x86_64-pc-windows-gnu
 
 # Windows 32-bit: LLVM-MinGW supplies the DWARF unwinder that Homebrew's
 # i686 mingw-w64 (SJLJ) lacks; linking libunwind.a statically keeps the
 # result a single .exe.
-rustup target add i686-pc-windows-gnullvm
 curl -LO https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/llvm-mingw-20261104-ucrt-macos-universal.tar.xz
 tar -xf llvm-mingw-20261104-ucrt-macos-universal.tar.xz
 mkdir -p static-libs
 cp llvm-mingw-20261104-ucrt-macos-universal/i686-w64-mingw32/lib/libunwind.a static-libs/
 CARGO_TARGET_I686_PC_WINDOWS_GNULLVM_LINKER="$PWD/llvm-mingw-20261104-ucrt-macos-universal/bin/i686-w64-mingw32-clang" \
     RUSTFLAGS="-L native=$PWD/static-libs" \
-    cargo build --release --target i686-pc-windows-gnullvm
+    cargo build --release --features gui --target i686-pc-windows-gnullvm
+
+scripts/package-release.sh macos
+scripts/package-release.sh windows-x64
+scripts/package-release.sh windows-x86
+scripts/package-release.sh linux-x64
 ```
 
 The 32-bit Rust build needs Windows 10 or newer: the standard library imports
-`GetSystemTimePreciseAsFileTime` and the Universal CRT.  For 32-bit Windows 7
-or 8.1 use the C++ port's `cable-cpp-windows-x86.exe` instead — it links only
-against `KERNEL32.dll` and the classic `msvcrt.dll` (see
+`GetSystemTimePreciseAsFileTime` and the Universal CRT.  The 32-bit archive
+therefore also contains the C++ port's console build
+`cable-cpp-windows-x86.exe`, which supports 32-bit Windows 7 and 8.1 — it
+links only against `KERNEL32.dll` and the classic `msvcrt.dll` (see
 [`cable-cpp/README.md`](cable-cpp/README.md)).
 
 ### Ports and benchmark
