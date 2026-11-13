@@ -1,4 +1,7 @@
 /target
 /dist
+/zig-linux
+/static-libs
+/llvm-mingw-*
 
 .DS_Store
